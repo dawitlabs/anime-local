@@ -11,9 +11,13 @@ services:
       CACHE_DIR: /app/.cache/streams
       CACHE_MAX_MB: ${CACHE_MAX_MB:-512}
       TRANSCODE_WORKERS: ${TRANSCODE_WORKERS:-2}
+      TORRENT_DIR: /app/data/torrents
+      TORRENT_MAX_GB: ${TORRENT_MAX_GB:-20}
     volumes:
       - ${MEDIA_DIR:-./media}:/app/media:ro
       - stream-cache:/app/.cache/streams
+      - torrent-data:/app/data/torrents
     restart: unless-stopped
 volumes:
   stream-cache:
+  torrent-data:

@@ -16,6 +16,7 @@ export interface Episode {
 }
 
 export interface Title {
+  source?: 'torrent';
   id: string;
   name: string;
   kind: 'movie' | 'series';
@@ -29,11 +30,25 @@ export interface Title {
 }
 
 export interface Library {
+  torrentCount?: number;
   titles: Title[];
   mediaDirectory: string;
   scannedAt: string;
   warnings: string[];
   totalBytes: number;
+}
+
+export interface TorrentStatus {
+  id: string;
+  name: string;
+  state: 'metadata' | 'checking' | 'ready' | 'paused' | 'error';
+  error?: string;
+  peers: number;
+  downloaded: number;
+  total: number;
+  downloadSpeed: number;
+  uploadSpeed: number;
+  videoCount: number;
 }
 
 export interface WatchProgress {

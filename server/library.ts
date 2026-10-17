@@ -23,6 +23,18 @@ interface Metadata {
   genres?: string[];
 }
 
+export interface VideoSource {
+  input: string;
+  version: string;
+  network: boolean;
+}
+export interface ExternalLibrary {
+  readonly titles: Title[];
+  readonly cachedBytes: number;
+  readonly count: number;
+  resolveVideo(id: string): VideoSource | undefined;
+}
+
 const idFor = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24);
 const tidy = (value: string) =>
   value
@@ -38,6 +50,7 @@ export function withinRoot(root: string, target: string): boolean {
 }
 
 export class LibraryStore {
+  external?: ExternalLibrary;
   private snapshot?: Snapshot;
   private scanning?: Promise<Library>;
 
@@ -45,7 +58,15 @@ export class LibraryStore {
 
   get library(): Library {
     if (!this.snapshot) throw new Error('Library has not been scanned.');
-    return this.snapshot.library;
+    const local = this.snapshot.library;
+    return this.external
+      ? {
+          ...local,
+          titles: [...this.external.titles, ...local.titles],
+          totalBytes: local.totalBytes + this.external.cachedBytes,
+          torrentCount: this.external.count,
+        }
+      : local;
   }
 
   scan(): Promise<Library> {
@@ -53,7 +74,7 @@ export class LibraryStore {
     this.scanning = this.build()
       .then((snapshot) => {
         this.snapshot = snapshot;
-        return snapshot.library;
+        return this.library;
       })
       .finally(() => {
         this.scanning = undefined;
@@ -72,6 +93,13 @@ export class LibraryStore {
     } catch {
       return undefined;
     }
+  }
+
+  async resolveVideo(id: string): Promise<VideoSource | undefined> {
+    const file = await this.resolveFile(id, 'video');
+    if (!file) return this.external?.resolveVideo(id);
+    const info = await stat(file);
+    return { input: file, version: `${id}:${info.size}:${info.mtimeMs}`, network: false };
   }
 
   private async build(): Promise<Snapshot> {

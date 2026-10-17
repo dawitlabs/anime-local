@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npm run build && mkdir -p /app/media /app/.cache/streams && chown -R node:node /app
+RUN npm run build && mkdir -p /app/media /app/.cache/streams /app/data/torrents && chown -R node:node /app
 USER node
 ENV HOST=0.0.0.0 PORT=4173 MEDIA_DIR=/app/media CACHE_DIR=/app/.cache/streams
 EXPOSE 4173

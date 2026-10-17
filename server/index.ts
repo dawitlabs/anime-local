@@ -6,6 +6,7 @@ import express from 'express';
 import { createApp } from './app.ts';
 import { LibraryStore } from './library.ts';
 import { StreamingService } from './streaming.ts';
+import { TorrentService } from './torrents.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mediaDirectory = path.resolve(root, process.env.MEDIA_DIR || 'media');
@@ -20,13 +21,19 @@ try {
   console.error(`Cannot read media folder: ${mediaDirectory}\nCreate the folder or set MEDIA_DIR in .env.`);
   process.exit(1);
 }
+const torrents = new TorrentService(
+  path.resolve(root, process.env.TORRENT_DIR || 'data/torrents'),
+  Number(process.env.TORRENT_MAX_GB || 20) * 1024 ** 3,
+);
+await torrents.start();
+store.external = torrents;
 const streaming = new StreamingService(
   store,
   path.resolve(root, process.env.CACHE_DIR || '.cache/streams'),
   Number(process.env.CACHE_MAX_MB || 512) * 1024 ** 2,
   Number(process.env.TRANSCODE_WORKERS || 2),
 );
-const app = createApp(store, development, streaming);
+const app = createApp(store, development, streaming, torrents);
 const server = createServer(app);
 let closeVite: (() => Promise<void>) | undefined;
 if (development) {
@@ -63,8 +70,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
   process.once(signal, () => {
     streaming.close();
     server.close(() => {
-      void closeVite?.().finally(() => process.exit(0));
-      if (!closeVite) process.exit(0);
+      void Promise.all([torrents.close(), closeVite?.()]).finally(() => process.exit(0));
     });
     server.closeAllConnections();
   });

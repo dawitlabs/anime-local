@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js/light';
 import { AlertCircle, LoaderCircle, Signal, Wifi } from 'lucide-react';
-import type { Episode, WatchProgress } from '../../shared/types';
+import type { Episode, TorrentStatus, WatchProgress } from '../../shared/types';
 
 interface Props {
   episode: Episode;
@@ -41,8 +41,31 @@ export function AdaptiveVideo({ episode, poster, progress, onProgress, onEnded }
   const [qualities, setQualities] = useState<number[]>([]);
   const [quality, setQuality] = useState(-1);
   const [playingHeight, setPlayingHeight] = useState(0);
+  const [torrent, setTorrent] = useState<TorrentStatus>();
   const manifest = useRef('');
   const nativeResume = useRef<number | null>(null);
+
+  useEffect(() => {
+    const id = /^t-([a-f0-9]{40})-/.exec(episode.id)?.[1];
+    if (!id) return;
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const response = await fetch('/api/torrents', { signal: abort.signal });
+        if (response.ok)
+          setTorrent(((await response.json()) as TorrentStatus[]).find((item) => item.id === id));
+      } catch {
+        /* The player has its own actionable connection error. */
+      }
+      if (!abort.signal.aborted) timer = setTimeout(() => void poll(), 3000);
+    };
+    void poll();
+    return () => {
+      abort.abort();
+      clearTimeout(timer);
+    };
+  }, [episode.id]);
 
   useEffect(() => {
     const element = video.current!;
@@ -88,6 +111,13 @@ export function AdaptiveVideo({ episode, poster, progress, onProgress, onEnded }
           maxBufferSize: 12 * 1024 * 1024,
           capLevelToPlayerSize: true,
           abrEwmaDefaultEstimate: 300_000,
+          fragLoadPolicy: {
+            default: {
+              ...Hls.DefaultConfig.fragLoadPolicy.default,
+              maxTimeToFirstByteMs: episode.id.startsWith('t-') ? 120_000 : 30_000,
+              maxLoadTimeMs: episode.id.startsWith('t-') ? 150_000 : 60_000,
+            },
+          },
         });
         engine.current = hls;
         nativeResume.current = null;
@@ -222,7 +252,14 @@ export function AdaptiveVideo({ episode, poster, progress, onProgress, onEnded }
           <div className="video-loading" role="status">
             <LoaderCircle size={26} className="spin" />
             <span>Preparing your stream…</span>
-            <small>The first few seconds are prepared on the host PC.</small>
+            <small>
+              {torrent
+                ? torrent.error ||
+                  (torrent.state === 'paused'
+                    ? 'Resume this source in Torrent sources.'
+                    : `${torrent.peers} peers · Fetching pieces and preparing video on your PC.`)
+                : 'The first few seconds are prepared on the host PC.'}
+            </small>
           </div>
         )}
       </div>

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import type { LibraryStore } from './library.ts';
+import type { LibraryStore, VideoSource } from './library.ts';
 
 const exec = promisify(execFile);
 export const SEGMENT_SECONDS = 6;
@@ -19,6 +19,7 @@ interface Quality {
   audioKbps: number;
 }
 interface MediaInfo {
+  network: boolean;
   key: string;
   file: string;
   duration: number;
@@ -84,16 +85,12 @@ export class StreamingService {
   }
 
   async info(id: string): Promise<MediaInfo> {
-    const file = await this.store.resolveFile(id, 'video');
-    if (!file) throw new StreamError('Video not found. Rescan your library.', 404);
-    const info = await stat(file);
-    const key = createHash('sha256')
-      .update(`v1:${id}:${info.size}:${info.mtimeMs}`)
-      .digest('hex')
-      .slice(0, 24);
+    const source = await this.store.resolveVideo(id);
+    if (!source) throw new StreamError('Video not found. Check your library or torrent sources.', 404);
+    const key = createHash('sha256').update(`v2:${source.version}`).digest('hex').slice(0, 24);
     let pending = this.metadata.get(key);
     if (!pending) {
-      pending = this.probe(file, key);
+      pending = this.probe(source, key);
       this.metadata.set(key, pending);
       void pending.catch(() => this.metadata.delete(key));
       if (this.metadata.size > 1024) this.metadata.delete(this.metadata.keys().next().value!);
@@ -101,7 +98,7 @@ export class StreamingService {
     return pending;
   }
 
-  private async probe(file: string, key: string): Promise<MediaInfo> {
+  private async probe(source: VideoSource, key: string): Promise<MediaInfo> {
     let stdout: string;
     try {
       ({ stdout } = await exec(
@@ -109,17 +106,22 @@ export class StreamingService {
         [
           '-v',
           'error',
+          '-protocol_whitelist',
+          source.network ? 'http,tcp' : 'file',
+          ...(source.network ? ['-rw_timeout', '60000000'] : []),
           '-show_entries',
           'stream=codec_type,width,height:format=duration',
           '-of',
           'json',
-          file,
+          source.input,
         ],
-        { timeout: 15_000, maxBuffer: 1024 * 1024, signal: this.abort.signal },
+        { timeout: source.network ? 90_000 : 15_000, maxBuffer: 1024 * 1024, signal: this.abort.signal },
       ));
     } catch {
       throw new StreamError(
-        'Adaptive streaming needs FFmpeg and FFprobe installed on the host PC, and a readable video file.',
+        source.network
+          ? 'Could not read the video from peers. Check torrent status, wait for peers, then retry. FFmpeg must be installed.'
+          : 'Adaptive streaming needs FFmpeg and FFprobe installed on the host PC, and a readable video file.',
       );
     }
     const data = JSON.parse(stdout) as {
@@ -135,7 +137,8 @@ export class StreamingService {
     if (!selected.length) selected.push({ ...profiles[0], height: sourceHeight });
     return {
       key,
-      file,
+      file: source.input,
+      network: source.network,
       duration,
       audio: data.streams?.some((item) => item.codec_type === 'audio') || false,
       qualities: selected.map((quality) => ({
@@ -238,6 +241,9 @@ export class StreamingService {
         '-y',
         '-threads',
         '2',
+        '-protocol_whitelist',
+        info.network ? 'http,tcp' : 'file',
+        ...(info.network ? ['-rw_timeout', '60000000'] : []),
         '-ss',
         String(index * SEGMENT_SECONDS),
         '-i',
@@ -288,7 +294,11 @@ export class StreamingService {
         'mpegts',
         partial,
       ];
-      await exec('ffmpeg', args, { timeout: 90_000, maxBuffer: 1024 * 1024, signal: this.abort.signal });
+      await exec('ffmpeg', args, {
+        timeout: info.network ? 120_000 : 90_000,
+        maxBuffer: 1024 * 1024,
+        signal: this.abort.signal,
+      });
       const { size } = await stat(partial);
       const commit = this.commits.then(async () => {
         await this.makeSpace(size);

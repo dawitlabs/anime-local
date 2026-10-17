@@ -4,8 +4,14 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { LibraryStore } from './library.ts';
 import { StreamError, type StreamingService } from './streaming.ts';
+import type { TorrentService } from './torrents.ts';
 
-export function createApp(store: LibraryStore, development = false, streaming?: StreamingService) {
+export function createApp(
+  store: LibraryStore,
+  development = false,
+  streaming?: StreamingService,
+  torrents?: TorrentService,
+) {
   const app = express();
   app.use(compression());
   app.disable('x-powered-by');
@@ -27,6 +33,38 @@ export function createApp(store: LibraryStore, development = false, streaming?: 
     next();
   });
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+  if (torrents) {
+    app.get('/api/torrents', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(torrents.list());
+    });
+    app.post('/api/torrents', express.json({ limit: '20kb' }), async (req, res) => {
+      const body: unknown = req.body;
+      if (!body || typeof body !== 'object' || !('magnet' in body) || typeof body.magnet !== 'string')
+        throw new StreamError('Enter a magnet link.', 400);
+      res.status(202).json({ id: await torrents.add(body.magnet.trim()) });
+    });
+    app.post(
+      '/api/torrents/file',
+      express.raw({ type: 'application/octet-stream', limit: '2mb' }),
+      async (req, res) => {
+        if (!Buffer.isBuffer(req.body) || !req.body.length)
+          throw new StreamError('Choose a .torrent file.', 400);
+        res.status(202).json({ id: await torrents.add(req.body) });
+      },
+    );
+    app.patch('/api/torrents/:id', express.json({ limit: '1kb' }), async (req, res) => {
+      const body: unknown = req.body;
+      if (!body || typeof body !== 'object' || !('paused' in body) || typeof body.paused !== 'boolean')
+        throw new StreamError('paused must be true or false.', 400);
+      await torrents.pause(req.params.id, body.paused);
+      res.sendStatus(204);
+    });
+    app.delete('/api/torrents/:id', async (req, res) => {
+      await torrents.remove(req.params.id);
+      res.sendStatus(204);
+    });
+  }
   app.get('/api/library', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json(store.library);
@@ -79,6 +117,10 @@ export function createApp(store: LibraryStore, development = false, streaming?: 
     });
   }
   app.get('/api/stream/:id', async (req, res, next) => {
+    if (torrents && req.params.id.startsWith('t-')) {
+      torrents.serve(req, res, req.params.id);
+      return;
+    }
     const file = await store.resolveFile(req.params.id, 'video');
     if (!file) {
       res

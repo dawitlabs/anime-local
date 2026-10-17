@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "A local anime cinema for your movies and series.",
+  "description": "A self-hosted anime cinema with host-side torrent streaming and adaptive low-data playback.",
   "engines": {
     "node": ">=22.13.0"
   },
@@ -24,15 +24,20 @@
     "express": "^5.3.0",
     "hls.js": "^1.7.3",
     "lucide-react": "^1.59.0",
+    "parse-torrent": "^11.0.24",
+    "range-parser": "^1.3.0",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "webtorrent": "^3.0.21"
   },
   "devDependencies": {
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
+    "@types/range-parser": "^1.2.7",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/webtorrent": "^3.0.0",
     "@vitejs/plugin-react": "^6.1.2",
     "prettier": "^3.9.10",
     "tsx": "^4.23.15",

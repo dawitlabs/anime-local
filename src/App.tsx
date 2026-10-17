@@ -12,6 +12,7 @@ import {
   HardDrive,
   LayoutGrid,
   Moon,
+  Magnet,
   Play,
   Plus,
   RefreshCw,
@@ -26,6 +27,7 @@ import type { Library, Title } from '../shared/types';
 import { Landscape } from './components/Landscape';
 import { TitleCard, ContinueCard } from './components/TitleCard';
 import { LibraryGuide } from './components/LibraryGuide';
+import { TorrentManager } from './components/TorrentManager';
 import { sizeLabel, usePreferences } from './storage';
 
 const Player = lazy(() => import('./components/Player').then((module) => ({ default: module.Player })));
@@ -44,6 +46,7 @@ export function App() {
   const [scanning, setScanning] = useState(false);
   const [notice, setNotice] = useState('');
   const [guide, setGuide] = useState(false);
+  const [torrentManager, setTorrentManager] = useState(false);
   const [view, setView] = useState<View>('all');
   const [query, setQuery] = useState('');
   const [genre, setGenre] = useState('All genres');
@@ -76,6 +79,10 @@ export function App() {
   }, []);
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void load();
+    }, 5000);
+    return () => clearInterval(timer);
   }, [load]);
   useEffect(() => {
     if (!notice) return;
@@ -149,9 +156,13 @@ export function App() {
         </nav>
         <div className="sidebar-library">
           <span className="nav-label">YOUR SPACE</span>
+          <button className="nav-item" onClick={() => setTorrentManager(true)}>
+            <Magnet size={19} />
+            <span>Torrent sources</span>
+          </button>
           <button className="nav-item" onClick={() => setGuide(true)}>
             <FolderOpen size={19} />
-            <span>Manage library</span>
+            <span>Local files</span>
           </button>
         </div>
         <div className="sidebar-bottom">
@@ -165,7 +176,7 @@ export function App() {
             </div>
             <span className="online-dot" />
           </div>
-          <button className="help-link" onClick={() => setGuide(true)}>
+          <button className="help-link" onClick={() => setTorrentManager(true)}>
             <CircleHelp size={16} /> Getting started <ChevronRight size={15} />
           </button>
           <div className="sidebar-footer">
@@ -192,12 +203,12 @@ export function App() {
           </label>
           <button
             className="profile-button"
-            onClick={() => setGuide(true)}
-            aria-label="Open local library settings"
+            onClick={() => setTorrentManager(true)}
+            aria-label="Open torrent sources"
           >
             <span className="online-dot" />
             LOCAL
-            <HardDrive size={16} />
+            <Magnet size={16} />
           </button>
         </header>
         <main id="main-content">
@@ -291,15 +302,15 @@ export function App() {
                     {featured?.description ||
                       (featured
                         ? 'Settle in and pick up a story from your own collection. Stream straight from your PC, at your pace.'
-                        : 'Your favorite worlds, in one beautiful place. A personal anime cinema that streams right from your PC.')}
+                        : 'Add a torrent, choose an episode, and settle in. Your personal anime cinema streams right from your PC.')}
                   </p>
                   <div className="hero-actions">
                     <button
                       className="button primary"
-                      onClick={() => (featured ? play(featured) : setGuide(true))}
+                      onClick={() => (featured ? play(featured) : setTorrentManager(true))}
                     >
                       {featured ? <Play size={18} fill="currentColor" /> : <Plus size={19} />}
-                      {featured ? 'Watch now' : 'Add your first anime'}
+                      {featured ? 'Watch now' : 'Add your first torrent'}
                     </button>
                     {featured ? (
                       <button className="button glass" onClick={() => preferences.toggleSaved(featured.id)}>
@@ -307,7 +318,7 @@ export function App() {
                         watchlist
                       </button>
                     ) : (
-                      <button className="hero-text-button" onClick={() => setGuide(true)}>
+                      <button className="hero-text-button" onClick={() => setTorrentManager(true)}>
                         How it works <ArrowRight size={16} />
                       </button>
                     )}
@@ -470,12 +481,12 @@ export function App() {
                       ? 'Tap the bookmark on any title to add it to your watchlist.'
                       : titles.length
                         ? 'Add more videos or try a different filter.'
-                        : 'Add your movies and episodes to your media folder. We’ll take care of the browsing, the streaming, and the next episode.'}
+                        : 'Add a magnet link or a .torrent file. Your movies and episodes appear here once peers share the file list.'}
                 </p>
                 {!titles.length ? (
-                  <button className="button secondary" onClick={() => setGuide(true)}>
-                    <FolderOpen size={16} />
-                    Set up your library <ArrowRight size={15} />
+                  <button className="button secondary" onClick={() => setTorrentManager(true)}>
+                    <Magnet size={16} />
+                    Add torrent source <ArrowRight size={15} />
                   </button>
                 ) : query ? (
                   <button
@@ -511,6 +522,7 @@ export function App() {
           onClose={() => setGuide(false)}
         />
       )}
+      {torrentManager && <TorrentManager onClose={() => setTorrentManager(false)} onChange={load} />}
       {selected && (
         <Suspense
           fallback={
