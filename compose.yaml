@@ -1,0 +1,19 @@
+services:
+  yoru:
+    build: .
+    init: true
+    ports:
+      - '${BIND_ADDRESS:-127.0.0.1}:${PORT:-4173}:4173'
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4173
+      MEDIA_DIR: /app/media
+      CACHE_DIR: /app/.cache/streams
+      CACHE_MAX_MB: ${CACHE_MAX_MB:-512}
+      TRANSCODE_WORKERS: ${TRANSCODE_WORKERS:-2}
+    volumes:
+      - ${MEDIA_DIR:-./media}:/app/media:ro
+      - stream-cache:/app/.cache/streams
+    restart: unless-stopped
+volumes:
+  stream-cache:

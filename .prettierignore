@@ -1,0 +1,7 @@
+node_modules
+dist
+media
+.cache
+output
+.playwright-cli
+package-lock.json

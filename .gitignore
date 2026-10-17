@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.cache/
+.env
+.env.*
+!.env.example
+media/*
+!media/.gitkeep
+output/
+.playwright-cli/
+*.log
+.DS_Store
