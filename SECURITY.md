@@ -1,6 +1,6 @@
 # Deployment scope
 
-Yoru is a personal PC application. It binds to loopback by default and has no account or authentication system. Enabling a LAN bind gives everyone who can reach it control over the library, torrent sources and their cache. For remote access, use an authenticated VPN. A reverse proxy needs both HTTPS authentication and a correctly configured origin policy; this repository does not ship that deployment.
+Yoru is a personal PC application. It binds to loopback by default and has no account or authentication system. Enabling a LAN bind gives everyone who can reach it control over the library, torrent sources and their cache. Hostnames are restricted to localhost, numeric IPs and explicit `ALLOWED_HOSTS` to reject DNS rebinding through arbitrary domains. For remote access, use an authenticated VPN. A reverse proxy needs both HTTPS authentication and a correctly configured origin policy; this repository does not ship that deployment.
 
 Torrent connections originate from the host PC. Peers and trackers can see its network address. The engine does not automatically configure UPnP/NAT-PMP router mappings. Private tracker credentials may be present in `data/torrents/library.json`; keep the entire data directory private and out of Git.
 

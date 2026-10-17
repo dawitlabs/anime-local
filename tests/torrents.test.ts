@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { get } from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import WebTorrent, { type Torrent } from 'webtorrent';
@@ -86,6 +87,13 @@ test(
     const address = server.address();
     assert.ok(address && typeof address === 'object');
     const base = `http://127.0.0.1:${address.port}`;
+    const reboundStatus = await new Promise<number | undefined>((resolve, reject) => {
+      get(`${base}/api/torrents`, { headers: { Host: 'rebound.example' } }, (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      }).on('error', reject);
+    });
+    assert.equal(reboundStatus, 403);
     const seed = await new Promise<Torrent>((resolve, reject) => {
       seeder.once('error', reject);
       const options = { announce: [] as string[], pieceLength: 64 * 1024 };

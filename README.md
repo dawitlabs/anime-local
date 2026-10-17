@@ -142,17 +142,18 @@ Implementation references: [WebTorrent API](https://webtorrent.io/docs), [FFmpeg
 
 Copy `.env.example` to `.env`; restart after changes.
 
-| Variable            | Default            | Purpose                                                       |
-| ------------------- | ------------------ | ------------------------------------------------------------- |
-| `MEDIA_DIR`         | `./media`          | Your local media root; relative to the repository or absolute |
-| `HOST`              | `127.0.0.1`        | Node listen address; `0.0.0.0` enables trusted LAN access     |
-| `PORT`              | `4173`             | HTTP port                                                     |
-| `CACHE_DIR`         | `./.cache/streams` | Dedicated generated-chunk directory                           |
-| `CACHE_MAX_MB`      | `512`              | Completed segment cache budget in MiB, minimum 32             |
-| `TRANSCODE_WORKERS` | `2`                | Parallel segment encoders, from 1 to 4                        |
-| `TORRENT_DIR`       | `./data/torrents`  | Private metadata and torrent piece storage                    |
-| `TORRENT_MAX_GB`    | `20`               | Combined declared source-size budget in GiB                   |
-| `BIND_ADDRESS`      | `127.0.0.1`        | Docker host binding only                                      |
+| Variable            | Default            | Purpose                                                                     |
+| ------------------- | ------------------ | --------------------------------------------------------------------------- |
+| `MEDIA_DIR`         | `./media`          | Your local media root; relative to the repository or absolute               |
+| `HOST`              | `127.0.0.1`        | Node listen address; `0.0.0.0` enables trusted LAN access                   |
+| `PORT`              | `4173`             | HTTP port                                                                   |
+| `CACHE_DIR`         | `./.cache/streams` | Dedicated generated-chunk directory                                         |
+| `CACHE_MAX_MB`      | `512`              | Completed segment cache budget in MiB, minimum 32                           |
+| `TRANSCODE_WORKERS` | `2`                | Parallel segment encoders, from 1 to 4                                      |
+| `TORRENT_DIR`       | `./data/torrents`  | Private metadata and torrent piece storage                                  |
+| `TORRENT_MAX_GB`    | `20`               | Combined declared source-size budget in GiB                                 |
+| `ALLOWED_HOSTS`     | empty              | Extra hostnames, comma-separated; localhost and numeric IPs work by default |
+| `BIND_ADDRESS`      | `127.0.0.1`        | Docker host binding only                                                    |
 
 Keep `CACHE_DIR`, `TORRENT_DIR`, and `MEDIA_DIR` separate. Use dedicated storage directories per running instance. Stop the app before manually clearing its cache. Media, torrent metadata (which may contain private tracker URLs), secrets, cache, and build artifacts are excluded from Git. Local library files are read-only; **Remove source and cache** only deletes the app's torrent pieces for that source.
 

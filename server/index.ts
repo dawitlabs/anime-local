@@ -33,7 +33,16 @@ const streaming = new StreamingService(
   Number(process.env.CACHE_MAX_MB || 512) * 1024 ** 2,
   Number(process.env.TRANSCODE_WORKERS || 2),
 );
-const app = createApp(store, development, streaming, torrents);
+const app = createApp(
+  store,
+  development,
+  streaming,
+  torrents,
+  (process.env.ALLOWED_HOSTS || '')
+    .split(',')
+    .map((host) => host.trim())
+    .filter(Boolean),
+);
 const server = createServer(app);
 let closeVite: (() => Promise<void>) | undefined;
 if (development) {

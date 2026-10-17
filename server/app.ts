@@ -2,6 +2,7 @@ import express, { type ErrorRequestHandler } from 'express';
 import compression from 'compression';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { isIP } from 'node:net';
 import { LibraryStore } from './library.ts';
 import { StreamError, type StreamingService } from './streaming.ts';
 import type { TorrentService } from './torrents.ts';
@@ -11,11 +12,25 @@ export function createApp(
   development = false,
   streaming?: StreamingService,
   torrents?: TorrentService,
+  allowedHosts: string[] = [],
 ) {
   const app = express();
+  const hosts = new Set(['localhost', ...allowedHosts.map((host) => host.toLowerCase())]);
   app.use(compression());
   app.disable('x-powered-by');
   app.use((req, res, next) => {
+    // Restrict Host as well as Origin: a hostile hostname can otherwise rebind
+    // its DNS to a local PC and read a private server as its own origin.
+    let hostname = '';
+    try {
+      hostname = new URL(`http://${req.get('host')}`).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    } catch {
+      /* Invalid hosts are rejected below. */
+    }
+    if (!hosts.has(hostname) && !isIP(hostname)) {
+      res.status(403).json({ error: 'Open Yoru using localhost or the host PC IP address.' });
+      return;
+    }
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');

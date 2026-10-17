@@ -2,7 +2,7 @@ FROM node:24-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci --foreground-scripts
 COPY . .
 RUN npm run build && mkdir -p /app/media /app/.cache/streams /app/data/torrents && chown -R node:node /app
 USER node

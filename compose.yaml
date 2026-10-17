@@ -13,6 +13,7 @@ services:
       TRANSCODE_WORKERS: ${TRANSCODE_WORKERS:-2}
       TORRENT_DIR: /app/data/torrents
       TORRENT_MAX_GB: ${TORRENT_MAX_GB:-20}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
     volumes:
       - ${MEDIA_DIR:-./media}:/app/media:ro
       - stream-cache:/app/.cache/streams
