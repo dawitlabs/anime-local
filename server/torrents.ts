@@ -21,12 +21,16 @@ interface SavedTorrent {
   name: string;
   total: number;
   cachedBytes?: number;
+  selective?: boolean;
+  selected?: number[];
+  reservedBytes?: number;
   title?: Title;
 }
 interface Entry {
   saved: SavedTorrent;
   torrent?: Torrent;
   error?: string;
+  errorStatus?: number;
 }
 
 /** A host-side BitTorrent client. No torrent engine or peer traffic runs in the browser. */
@@ -39,7 +43,7 @@ export class TorrentService implements ExternalLibrary {
       res.writeHead(404).end();
       return;
     }
-    this.serve(req, res, req.url.slice(prefix.length));
+    void this.serve(req, res, req.url.slice(prefix.length));
   });
   private secret = randomBytes(32).toString('hex');
   private address = '';
@@ -95,7 +99,13 @@ export class TorrentService implements ExternalLibrary {
       if (
         !/^[a-f0-9]{40}$/.test(item.id) ||
         typeof item.source !== 'string' ||
-        typeof item.paused !== 'boolean'
+        typeof item.paused !== 'boolean' ||
+        (item.selective !== undefined && typeof item.selective !== 'boolean') ||
+        (item.selective &&
+          (!Array.isArray(item.selected) ||
+            item.selected.some((index) => !Number.isSafeInteger(index) || index < 0) ||
+            !Number.isSafeInteger(item.reservedBytes) ||
+            item.reservedBytes! < 0))
       )
         throw new Error('Invalid saved torrent entry.');
       const entry: Entry = { saved: item };
@@ -119,7 +129,7 @@ export class TorrentService implements ExternalLibrary {
     while (!signal.aborted && Date.now() < deadline) {
       const entry = this.entries.get(id);
       if (!entry) throw new StreamError('Source was removed.');
-      if (entry.error) throw new StreamError(entry.error);
+      if (entry.error) throw new StreamError(entry.error, entry.errorStatus || 503);
       if (entry.torrent?.ready && entry.saved.title) return entry.saved.title;
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
@@ -163,13 +173,13 @@ export class TorrentService implements ExternalLibrary {
     return next;
   }
 
-  async add(source: string | Uint8Array): Promise<string> {
+  async add(source: string | Uint8Array, options: { selective?: boolean } = {}): Promise<string> {
     return this.serialize(async () => {
       const parsed = await this.parse(source);
       if (this.entries.has(parsed.infoHash)) return parsed.infoHash;
       if (this.entries.size >= 32)
         throw new StreamError('Remove a torrent before adding more (limit: 32).', 409);
-      this.validate(parsed);
+      const reservedBytes = this.validate(parsed, options.selective ? [] : undefined);
       const entry: Entry = {
         saved: {
           id: parsed.infoHash,
@@ -179,6 +189,9 @@ export class TorrentService implements ExternalLibrary {
           addedAt: Date.now(),
           name: parsed.name || 'Finding torrent metadata…',
           total: parsed.length || 0,
+          selective: options.selective || false,
+          selected: [],
+          reservedBytes,
         },
       };
       this.entries.set(parsed.infoHash, entry);
@@ -218,27 +231,26 @@ export class TorrentService implements ExternalLibrary {
     return parsed;
   }
 
-  private validate(parsed: {
-    infoHash: string;
-    length?: number;
-    files?: Array<{ path: string; length: number }>;
-    pieceLength?: number;
-  }) {
-    if (!parsed.files?.length) return;
-    const reserved = [...this.entries.values()]
-      .filter((entry) => entry.saved.id !== parsed.infoHash)
-      .reduce((sum, entry) => sum + entry.saved.total, 0);
+  private validate(
+    parsed: {
+      infoHash: string;
+      length?: number;
+      files?: Array<{ path: string; length: number }>;
+      pieceLength?: number;
+    },
+    selected?: number[],
+  ): number {
+    if (!parsed.files?.length) return 0;
     if (
       !Number.isSafeInteger(parsed.length) ||
       parsed.length! <= 0 ||
-      reserved + parsed.length! > this.maxBytes
+      parsed.length! > 1024 ** 4 ||
+      parsed.files.length > 5000 ||
+      !parsed.pieceLength ||
+      parsed.pieceLength > 16 * 1024 ** 2 ||
+      Math.ceil(parsed.length! / parsed.pieceLength) > 128_000
     )
-      throw new StreamError(
-        'Torrent library capacity exceeded. Remove a source or raise TORRENT_MAX_GB on the host.',
-        413,
-      );
-    if (parsed.files.length > 5000 || !parsed.pieceLength || parsed.pieceLength > 16 * 1024 ** 2)
-      throw new StreamError('This torrent has too many files or unusually large pieces.', 422);
+      throw new StreamError('This torrent has unsupported size, file count or piece layout.', 422);
     const root = path.join(this.directory, 'pieces', parsed.infoHash);
     for (const file of parsed.files) {
       if (
@@ -253,6 +265,29 @@ export class TorrentService implements ExternalLibrary {
       )
         throw new StreamError('Torrent contains an unsafe file path or length.', 422);
     }
+    if (selected?.some((index) => !Number.isSafeInteger(index) || index < 0 || index >= parsed.files!.length))
+      throw new StreamError('Invalid selected torrent file.', 422);
+    // A read can fetch the pieces overlapping either edge of a selected file.
+    // Reserving both boundaries is conservative even when episodes share a piece.
+    const reservation =
+      selected === undefined
+        ? parsed.length!
+        : [...new Set(selected)].reduce(
+            (sum, index) => sum + parsed.files![index].length + 2 * parsed.pieceLength!,
+            0,
+          );
+    const reserved = [...this.entries.values()]
+      .filter((entry) => entry.saved.id !== parsed.infoHash)
+      .reduce(
+        (sum, entry) => sum + (entry.saved.selective ? entry.saved.reservedBytes || 0 : entry.saved.total),
+        0,
+      );
+    if (reserved + reservation > this.maxBytes)
+      throw new StreamError(
+        'Torrent library capacity exceeded. Remove a source or raise TORRENT_MAX_GB on the host.',
+        413,
+      );
+    return reservation;
   }
 
   private attach(entry: Entry, parsed: Instance) {
@@ -266,14 +301,21 @@ export class TorrentService implements ExternalLibrary {
     });
     entry.torrent = torrent;
     entry.error = undefined;
+    entry.errorStatus = undefined;
     torrent.on('error', (error) => {
       entry.error = String(error).slice(0, 300);
     });
     torrent.once('metadata', () => {
       try {
-        this.validate(torrent);
+        if (torrent.torrentFile.length > 2 * 1024 ** 2)
+          throw new StreamError('Torrent metadata exceeds the 2 MiB limit.', 422);
+        entry.saved.reservedBytes = this.validate(
+          torrent,
+          entry.saved.selective ? entry.saved.selected || [] : undefined,
+        );
       } catch (error) {
         entry.error = error instanceof Error ? error.message : 'Unsupported torrent.';
+        entry.errorStatus = error instanceof StreamError ? error.status : 503;
         torrent.destroy();
         return;
       }
@@ -383,19 +425,48 @@ export class TorrentService implements ExternalLibrary {
     return next;
   }
 
-  private file(id: string): TorrentFile {
+  private file(id: string, allowUnselected = false): TorrentFile {
     const match = /^t-([a-f0-9]{40})-(\d+)$/.exec(id);
     const entry = match && this.entries.get(match[1]);
     if (!entry || !entry.saved.title?.episodes.some((episode) => episode.id === id))
       throw new StreamError('Torrent video not found.', 404);
     if (entry.saved.paused)
       throw new StreamError('This torrent is paused. Resume it in Torrent sources.', 409);
-    if (entry.error) throw new StreamError(entry.error);
+    if (entry.error) throw new StreamError(entry.error, entry.errorStatus || 503);
     if (!entry.torrent?.ready)
       throw new StreamError('Waiting for torrent metadata or checking cached pieces. Try again shortly.');
     const file = entry.torrent.files[Number(match![2])];
     if (!file) throw new StreamError('Torrent video not found.', 404);
+    if (entry.saved.selective && !allowUnselected && !entry.saved.selected?.includes(Number(match![2])))
+      throw new StreamError('This episode is not selected for streaming yet.', 409);
     return file;
+  }
+
+  async prepareVideo(id: string): Promise<VideoSource | undefined> {
+    if (!id.startsWith('t-')) return undefined;
+    return this.serialize(async () => {
+      if (this.closed) throw new StreamError('Server is stopping.');
+      this.file(id, true);
+      const [, hash, fileIndex] = id.split('-');
+      const entry = this.entries.get(hash)!;
+      const index = Number(fileIndex);
+      if (entry.saved.selective && !entry.saved.selected?.includes(index)) {
+        const previous = entry.saved.selected || [];
+        const previousBytes = entry.saved.reservedBytes;
+        const next = [...previous, index];
+        const reservedBytes = this.validate(entry.torrent!, next);
+        entry.saved.selected = next;
+        entry.saved.reservedBytes = reservedBytes;
+        try {
+          await this.persist();
+        } catch {
+          entry.saved.selected = previous;
+          entry.saved.reservedBytes = previousBytes;
+          throw new StreamError('Could not save the episode reservation. Check disk space on the host.');
+        }
+      }
+      return this.resolveVideo(id);
+    });
   }
 
   resolveVideo(id: string): VideoSource | undefined {
@@ -404,8 +475,12 @@ export class TorrentService implements ExternalLibrary {
     return { input: `${this.address}/${id}`, version: `${id}:${file.length}`, network: true };
   }
 
-  serve(req: IncomingMessage, res: ServerResponse, id: string) {
+  async serve(req: IncomingMessage, res: ServerResponse, id: string) {
     try {
+      if (this.closed || this.active.size >= 12)
+        throw new StreamError('Torrent streams are busy. Try again shortly.');
+      await this.prepareVideo(id);
+      if (req.destroyed || res.destroyed) return;
       if (this.closed || this.active.size >= 12)
         throw new StreamError('Torrent streams are busy. Try again shortly.');
       const file = this.file(id);

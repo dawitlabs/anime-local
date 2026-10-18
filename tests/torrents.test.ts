@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { get } from 'node:http';
@@ -66,6 +66,7 @@ test(
       ],
       { timeout: 60_000 },
     );
+    await copyFile(videoPath, path.join(seedDir, 'S01E02 - Next.mp4'));
     await writeFile(path.join(seedDir, 'unselected.bin'), Buffer.alloc(32 * 1024 ** 2, 42));
     const seeder = new WebTorrent(isolated);
     const engine = new WebTorrent(isolated);
@@ -258,12 +259,44 @@ test(
     assert.equal(service.list()[0].downloaded, 0, 'No-peer streams remain partial and can be cancelled');
     await service.remove(id);
     assert.equal(service.titles.length, 0);
+    let limitedClosed = false;
     const limited = new TorrentService(path.join(root, 'limited'), 64 * 1024 ** 2, isolated);
     await limited.start();
     try {
       await assert.rejects(limited.add(seed.torrentFile), /capacity exceeded/);
-    } finally {
+      await limited.add(seed.torrentFile, { selective: true });
+      const selectedTitle = await limited.waitForTitle(seed.infoHash, 10_000, new AbortController().signal);
+      assert.equal(selectedTitle.episodes.length, 2);
+      const first = selectedTitle.episodes[0];
+      const second = selectedTitle.episodes[1];
+      assert.throws(() => limited.resolveVideo(first.id), /not selected/);
+      assert.ok(
+        await limited.prepareVideo(first.id),
+        'One episode fits even when the whole batch exceeds the budget',
+      );
+      await assert.rejects(
+        limited.prepareVideo(second.id),
+        /capacity exceeded/,
+        'Opening another episode must enforce the shared budget',
+      );
+      await limited.pause(seed.infoHash, true);
       await limited.close();
+      limitedClosed = true;
+      const restored = new TorrentService(path.join(root, 'limited'), 64 * 1024 ** 2, isolated);
+      await restored.start();
+      try {
+        await restored.pause(seed.infoHash, false);
+        await restored.waitForTitle(seed.infoHash, 10_000, new AbortController().signal);
+        assert.ok(
+          await restored.prepareVideo(first.id),
+          'Existing reservation must survive restart without double-counting',
+        );
+        await assert.rejects(restored.prepareVideo(second.id), /capacity exceeded/);
+      } finally {
+        await restored.close();
+      }
+    } finally {
+      if (!limitedClosed) await limited.close();
     }
   },
 );

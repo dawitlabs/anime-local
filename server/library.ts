@@ -33,6 +33,7 @@ export interface ExternalLibrary {
   readonly cachedBytes: number;
   readonly count: number;
   resolveVideo(id: string): VideoSource | undefined;
+  prepareVideo?(id: string): Promise<VideoSource | undefined>;
 }
 
 const idFor = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24);
@@ -97,7 +98,8 @@ export class LibraryStore {
 
   async resolveVideo(id: string): Promise<VideoSource | undefined> {
     const file = await this.resolveFile(id, 'video');
-    if (!file) return this.external?.resolveVideo(id);
+    if (!file)
+      return this.external?.prepareVideo ? this.external.prepareVideo(id) : this.external?.resolveVideo(id);
     const info = await stat(file);
     return { input: file, version: `${id}:${info.size}:${info.mtimeMs}`, network: false };
   }

@@ -135,6 +135,7 @@ export function normalizeSources(value: unknown): StreamSource[] {
       Number(b.peers > 0) - Number(a.peers > 0) ||
       Number(a.height > 720) - Number(b.height > 720) ||
       Number(a.height > 1080) - Number(b.height > 1080) ||
+      Number(b.peers >= 20) - Number(a.peers >= 20) ||
       (a.bytes === b.bytes ? 0 : a.bytes - b.bytes) ||
       b.peers - a.peers,
   );
@@ -142,7 +143,7 @@ export function normalizeSources(value: unknown): StreamSource[] {
 
 type TorrentAccess = Pick<
   TorrentService,
-  'add' | 'list' | 'resolveVideo' | 'waitForTitle' | 'pause' | 'remove'
+  'add' | 'list' | 'resolveVideo' | 'prepareVideo' | 'waitForTitle' | 'pause' | 'remove'
 >;
 
 export class CatalogService {
@@ -151,6 +152,7 @@ export class CatalogService {
   private resolving = new Map<string, Promise<ResolvedEpisode>>();
   private resolved = new Map<string, ResolvedEpisode>();
   private phases = new Map<string, string>();
+  private failures = new Map<string, { expires: number; hashes: Set<string> }>();
   private abort = new AbortController();
   private cleanups = new Map<string, Promise<void>>();
   private leases = new Map<string, { users: number; owned: boolean; succeeded: boolean }>();
@@ -216,7 +218,11 @@ export class CatalogService {
         if (this.cache.size >= 160) this.cache.delete(this.cache.keys().next().value!);
         this.cache.set(url, { expires: Date.now() + 5 * 60_000, data });
         return data;
-      } catch {
+      } catch (error) {
+        console.warn(
+          'Provider request failed',
+          JSON.stringify({ label, reason: error instanceof Error ? error.message : 'Unknown failure' }),
+        );
         throw new StreamError(
           `${label} is unavailable right now. Check your internet connection and retry.`,
           502,
@@ -289,7 +295,7 @@ export class CatalogService {
       }
     }
     if (this.resolving.size >= 4) throw new StreamError('Several streams are starting. Try again shortly.');
-    const work = this.find(titleId, episodeId, retry ? prior?.streamId.split('-')[1] : undefined);
+    const work = this.find(titleId, episodeId, retry ? prior?.streamId.split('-')[1] : undefined, retry);
     this.resolving.set(episodeId, work);
     try {
       return await work;
@@ -299,7 +305,12 @@ export class CatalogService {
     }
   }
 
-  private async find(titleId: string, episodeId: string, skipHash?: string): Promise<ResolvedEpisode> {
+  private async find(
+    titleId: string,
+    episodeId: string,
+    skipHash?: string,
+    retry = false,
+  ): Promise<ResolvedEpisode> {
     this.phases.set(episodeId, 'Finding a stream…');
     const title = await this.title(titleId);
     const episode = title.episodes.find((episode) => episode.id === episodeId);
@@ -311,9 +322,54 @@ export class CatalogService {
         'streams',
       ),
     );
-    const sources = normalizeSources(data.streams)
-      .filter((source) => source.hash !== skipHash)
-      .slice(0, 4);
+    let history = this.failures.get(episodeId);
+    if (!history || history.expires < Date.now()) {
+      history = { expires: Date.now() + 10 * 60_000, hashes: new Set<string>() };
+      if (this.failures.size >= 160) this.failures.delete(this.failures.keys().next().value!);
+      this.failures.set(episodeId, history);
+    }
+    const ready = new Set(
+      this.torrents
+        .list()
+        .filter((item) => item.state === 'ready')
+        .map((item) => item.id),
+    );
+    const unique = new Set<string>();
+    const candidates = normalizeSources(data.streams)
+      .filter((source) => {
+        if (source.hash === skipHash || unique.has(source.hash)) return false;
+        unique.add(source.hash);
+        return true;
+      })
+      .sort((a, b) => Number(ready.has(b.hash)) - Number(ready.has(a.hash)));
+    let remaining = candidates.filter((source) => !history.hashes.has(source.hash));
+    // Exhausting the provider list is different from exhausting one bounded search.
+    // Explicit retry starts over only after every candidate has been considered.
+    if (!remaining.length && candidates.length && retry) {
+      history.hashes.clear();
+      remaining = candidates;
+    }
+    const sources = remaining.filter((source) => ready.has(source.hash)).slice(0, 8);
+    const queued = new Set(sources.map((source) => source.hash));
+    const economical = remaining.filter((source) => !ready.has(source.hash));
+    const connected = economical
+      .filter((source) => source.height <= 1080 && source.peers > 0)
+      .sort((a, b) => b.peers - a.peers);
+    // Keep the low-data choice first, but alternate with healthier swarms so a
+    // long list of dead small releases cannot consume the entire search budget.
+    while (sources.length < 8 && economical.length) {
+      for (const queue of [economical, connected]) {
+        let next = queue.shift();
+        while (next && queued.has(next.hash)) next = queue.shift();
+        if (next && sources.length < 8) {
+          sources.push(next);
+          queued.add(next.hash);
+        }
+      }
+    }
+    const deadline = Date.now() + 120_000;
+    let tried = 0;
+    let capacityFailures = 0;
     if (!sources.length)
       throw new StreamError(
         'No stream is available for this episode right now. Try another episode or retry later.',
@@ -321,6 +377,8 @@ export class CatalogService {
       );
     for (const [attempt, source] of sources.entries()) {
       if (this.abort.signal.aborted) throw new StreamError('Server is stopping.');
+      if (Date.now() >= deadline) break;
+      tried++;
       this.phases.set(
         episodeId,
         `${attempt ? 'Trying another source' : 'Connecting to peers'}… (${attempt + 1}/${sources.length})`,
@@ -335,10 +393,14 @@ export class CatalogService {
       this.leases.set(source.hash, lease);
       try {
         const magnet = `magnet:?xt=urn:btih:${source.hash}${source.trackers.map((url) => `&tr=${encodeURIComponent(url)}`).join('')}`;
-        await this.torrents.add(magnet);
+        await this.torrents.add(magnet, { selective: true });
         if (this.torrents.list().find((item) => item.id === source.hash)?.state === 'paused')
           await this.torrents.pause(source.hash, false);
-        const ready = await this.torrents.waitForTitle(source.hash, 30_000, this.abort.signal);
+        const ready = await this.torrents.waitForTitle(
+          source.hash,
+          Math.max(1, Math.min(30_000, deadline - Date.now())),
+          this.abort.signal,
+        );
         const filename = source.filename.split(/[\\/]/).pop()?.toLowerCase();
         const indexed =
           source.index === undefined
@@ -357,11 +419,14 @@ export class CatalogService {
                 : undefined;
         if (!video) throw new Error('The episode did not match the source file list.');
         this.phases.set(episodeId, 'Buffering the first pieces…');
-        const input = this.torrents.resolveVideo(video.id);
+        const input = await this.torrents.prepareVideo(video.id);
         if (!input) throw new Error('Video unavailable');
         const response = await fetch(input.input, {
           headers: { Range: 'bytes=0-65535' },
-          signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)]),
+          signal: AbortSignal.any([
+            this.abort.signal,
+            AbortSignal.timeout(Math.max(1, Math.min(45_000, deadline - Date.now()))),
+          ]),
         });
         if (!response.ok) {
           await response.body?.cancel();
@@ -379,7 +444,23 @@ export class CatalogService {
         this.resolved.set(episodeId, result);
         lease.succeeded = true;
         return result;
-      } catch {
+      } catch (error) {
+        history.hashes.add(source.hash);
+        history.expires = Date.now() + 10 * 60_000;
+        if (error instanceof StreamError && error.status === 413) capacityFailures++;
+        const state = this.torrents.list().find((item) => item.id === source.hash);
+        console.warn(
+          'Stream candidate failed',
+          JSON.stringify({
+            episode: episodeId,
+            source: source.hash.slice(0, 12),
+            attempt: attempt + 1,
+            stage: this.phases.get(episodeId),
+            peers: state?.peers,
+            total: state?.total,
+            reason: error instanceof Error ? error.message.slice(0, 300) : 'Unknown source failure',
+          }),
+        );
         // Try the next candidate. Concurrent episode requests may share a batch torrent.
       } finally {
         lease.users--;
@@ -395,7 +476,9 @@ export class CatalogService {
       }
     }
     throw new StreamError(
-      'Available sources could not start. Peers may be offline or the source may exceed the host cache budget. Retry or try another episode.',
+      capacityFailures === tried && tried > 0
+        ? `The ${tried} sources checked exceed the host source-size budget. Retry to check other sources, or remove an old source in Stream settings.`
+        : `Could not start playback from ${tried} sources. ${capacityFailures ? `${capacityFailures} exceeded the host source-size budget. ` : ''}Retry will check other sources; unavailable peers may need more time.`,
     );
   }
 

@@ -25,12 +25,16 @@ const noTorrents = {
   },
   list: () => [],
   resolveVideo: () => undefined,
+  prepareVideo: async () => undefined,
   waitForTitle: async () => {
     throw new Error('Unexpected torrent');
   },
   pause: async () => {},
   remove: async () => {},
-} satisfies Pick<TorrentService, 'add' | 'list' | 'resolveVideo' | 'waitForTitle' | 'pause' | 'remove'>;
+} satisfies Pick<
+  TorrentService,
+  'add' | 'list' | 'resolveVideo' | 'prepareVideo' | 'waitForTitle' | 'pause' | 'remove'
+>;
 
 test('catalog normalizes released episodes and ranks smaller seeded sources without accepting arbitrary URLs', () => {
   const title = normalizeAnime(
@@ -146,6 +150,11 @@ test('automatic selection checks file identity, falls back, shares concurrent wo
       })),
     }),
     resolveVideo: () => ({ input: `http://127.0.0.1:${address.port}/video`, network: true, version: '1' }),
+    prepareVideo: async () => ({
+      input: `http://127.0.0.1:${address.port}/video`,
+      network: true,
+      version: '1',
+    }),
   };
   const catalog = new CatalogService(access, {
     fetcher: async (url) => {
@@ -176,4 +185,231 @@ test('automatic selection checks file identity, falls back, shares concurrent wo
   assert.equal((await catalog.resolve('kitsu:1', 'kitsu:1:2', true)).streamId, `t-${hash}-2`);
   assert.ok(existing.has(other), 'A prior playable source must survive retry');
   await assert.rejects(catalog.resolve('kitsu:1', 'kitsu:1:3'), /not available/);
+});
+
+test('automatic playback reaches a working source after four unavailable swarms', async (context) => {
+  const bridge = createServer((_req, res) => {
+    res.writeHead(206);
+    res.end(Buffer.alloc(65536));
+  });
+  await new Promise<void>((resolve) => bridge.listen(0, '127.0.0.1', resolve));
+  const address = bridge.address();
+  assert.ok(address && typeof address === 'object');
+  context.after(
+    () =>
+      new Promise<void>((resolve) => {
+        bridge.closeAllConnections();
+        bridge.close(() => resolve());
+      }),
+  );
+  const hashes = [1, 2, 3, 4, 5].map((n) => n.toString(16).padStart(40, '0'));
+  const attempts: string[] = [];
+  const catalog = new CatalogService(
+    {
+      ...noTorrents,
+      add: async (magnet) => {
+        const id = String(magnet).match(/btih:([a-f0-9]{40})/)![1];
+        attempts.push(id);
+        return id;
+      },
+      waitForTitle: async (id) => {
+        if (id !== hashes[4]) throw new Error('Torrent peers did not supply metadata in time.');
+        return {
+          ...normalizeAnime(meta, true)!,
+          episodes: [
+            {
+              id: `t-${id}-0`,
+              title: 'Episode 1',
+              filename: 'Episode1.mp4',
+              format: 'MP4',
+              number: 1,
+              season: 1,
+              size: 100000,
+              subtitles: [],
+            },
+          ],
+        };
+      },
+      resolveVideo: () => ({ input: `http://127.0.0.1:${address.port}/video`, version: '1', network: true }),
+      prepareVideo: async () => ({
+        input: `http://127.0.0.1:${address.port}/video`,
+        version: '1',
+        network: true,
+      }),
+    },
+    {
+      fetcher: async (url) =>
+        Response.json(
+          String(url).includes('/meta/')
+            ? { meta }
+            : {
+                streams: hashes.map((id, i) => ({
+                  infoHash: id,
+                  fileIdx: 0,
+                  name: '720p',
+                  title: `👤 25 💾 ${100 + i} MB`,
+                  behaviorHints: { filename: 'Episode1.mp4' },
+                })),
+              },
+        ),
+    },
+  );
+  context.after(() => catalog.close());
+  const result = await catalog.resolve('kitsu:1', 'kitsu:1:1');
+  assert.equal(result.streamId, `t-${hashes[4]}-0`);
+  assert.equal(new Set(attempts).size, 5);
+});
+
+test('retry advances to new candidates instead of repeating the same failed swarms', async (context) => {
+  const bridge = createServer((_req, res) => {
+    res.writeHead(206);
+    res.end(Buffer.alloc(65536));
+  });
+  await new Promise<void>((resolve) => bridge.listen(0, '127.0.0.1', resolve));
+  const address = bridge.address();
+  assert.ok(address && typeof address === 'object');
+  context.after(
+    () =>
+      new Promise<void>((resolve) => {
+        bridge.closeAllConnections();
+        bridge.close(() => resolve());
+      }),
+  );
+  const hashes = Array.from({ length: 16 }, (_, i) => (i + 1).toString(16).padStart(40, '0'));
+  const failed = new Set<string>();
+  let retry = false;
+  const catalog = new CatalogService(
+    {
+      ...noTorrents,
+      add: async (magnet) => String(magnet).match(/btih:([a-f0-9]{40})/)![1],
+      waitForTitle: async (id) => {
+        if (!retry || failed.has(id)) {
+          failed.add(id);
+          throw new Error('Torrent peers did not supply metadata in time.');
+        }
+        return {
+          ...normalizeAnime(meta, true)!,
+          episodes: [
+            {
+              id: `t-${id}-0`,
+              title: 'Episode 1',
+              filename: 'Episode1.mp4',
+              format: 'MP4',
+              number: 1,
+              season: 1,
+              size: 100000,
+              subtitles: [],
+            },
+          ],
+        };
+      },
+      resolveVideo: () => ({ input: `http://127.0.0.1:${address.port}/video`, version: '1', network: true }),
+      prepareVideo: async () => ({
+        input: `http://127.0.0.1:${address.port}/video`,
+        version: '1',
+        network: true,
+      }),
+    },
+    {
+      fetcher: async (url) =>
+        Response.json(
+          String(url).includes('/meta/')
+            ? { meta }
+            : {
+                streams: hashes.map((id, i) => ({
+                  infoHash: id,
+                  fileIdx: 0,
+                  name: '720p',
+                  title: `👤 25 💾 ${100 + i} MB`,
+                  behaviorHints: { filename: 'Episode1.mp4' },
+                })),
+              },
+        ),
+    },
+  );
+  context.after(() => catalog.close());
+  await assert.rejects(catalog.resolve('kitsu:1', 'kitsu:1:1'));
+  retry = true;
+  const result = await catalog.resolve('kitsu:1', 'kitsu:1:1', true);
+  assert.ok(!failed.has(result.streamId.split('-')[1]), 'Retry must progress beyond already failed swarms');
+});
+
+test('a healthy 720p swarm outranks a tiny 720p release with barely any reported peers', () => {
+  const sources = normalizeSources([
+    { infoHash: hash, fileIdx: 0, name: '720p', title: '👤 1 💾 100 MB' },
+    { infoHash: other, fileIdx: 0, name: '720p', title: '👤 40 💾 300 MB' },
+  ]);
+  assert.equal(sources[0].hash, other);
+});
+
+test('fallback reaches a well-seeded release without exhausting every smaller release first', async (context) => {
+  const bridge = createServer((_req, res) => res.writeHead(206).end(Buffer.alloc(65536)));
+  await new Promise<void>((resolve) => bridge.listen(0, '127.0.0.1', resolve));
+  const address = bridge.address();
+  assert.ok(address && typeof address === 'object');
+  context.after(
+    () =>
+      new Promise<void>((resolve) => {
+        bridge.closeAllConnections();
+        bridge.close(() => resolve());
+      }),
+  );
+  const attempts: string[] = [];
+  const small = Array.from({ length: 12 }, (_, i) => (i + 1).toString(16).padStart(40, '0'));
+  const catalog = new CatalogService(
+    {
+      ...noTorrents,
+      add: async (magnet) => {
+        const id = String(magnet).match(/btih:([a-f0-9]{40})/)![1];
+        attempts.push(id);
+        return id;
+      },
+      waitForTitle: async (id) => {
+        if (id !== hash) throw new Error('No reachable peers');
+        return {
+          ...normalizeAnime(meta, true)!,
+          episodes: [
+            {
+              ...normalizeAnime(meta, true)!.episodes[0],
+              id: `t-${hash}-0`,
+              filename: 'Episode1.mkv',
+              size: 100000,
+              format: 'MKV',
+            },
+          ],
+        };
+      },
+      prepareVideo: async () => ({
+        input: `http://127.0.0.1:${address.port}/video`,
+        version: '1',
+        network: true,
+      }),
+    },
+    {
+      fetcher: async (url) =>
+        Response.json(
+          String(url).includes('/meta/')
+            ? { meta }
+            : {
+                streams: [
+                  ...small.map((id, i) => ({ infoHash: id, name: '720p', title: `👤 25 💾 ${100 + i} MB` })),
+                  {
+                    infoHash: hash,
+                    name: '1080p',
+                    title: '👤 300 💾 350 MB',
+                    fileIdx: 0,
+                    behaviorHints: { filename: 'Episode1.mkv' },
+                  },
+                ],
+              },
+        ),
+    },
+  );
+  context.after(() => catalog.close());
+  assert.equal((await catalog.resolve('kitsu:1', 'kitsu:1:1')).streamId, `t-${hash}-0`);
+  assert.deepEqual(
+    attempts,
+    [small[0], hash],
+    'Try an economical source first, then a better-connected fallback',
+  );
 });
