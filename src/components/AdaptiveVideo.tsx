@@ -29,6 +29,7 @@ function rememberHeight(height: number) {
 }
 
 export function AdaptiveVideo({ episode, poster, progress, onProgress, onEnded }: Props) {
+  const streamId = episode.streamId || episode.id;
   const video = useRef<HTMLVideoElement>(null);
   const engine = useRef<Hls | null>(null);
   const callbacks = useRef({ onProgress, onEnded, progress });
@@ -46,7 +47,7 @@ export function AdaptiveVideo({ episode, poster, progress, onProgress, onEnded }
   const nativeResume = useRef<number | null>(null);
 
   useEffect(() => {
-    const id = /^t-([a-f0-9]{40})-/.exec(episode.id)?.[1];
+    const id = /^t-([a-f0-9]{40})-/.exec(streamId)?.[1];
     if (!id) return;
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
@@ -65,7 +66,7 @@ export function AdaptiveVideo({ episode, poster, progress, onProgress, onEnded }
       abort.abort();
       clearTimeout(timer);
     };
-  }, [episode.id]);
+  }, [streamId]);
 
   useEffect(() => {
     const element = video.current!;
@@ -82,11 +83,11 @@ export function AdaptiveVideo({ episode, poster, progress, onProgress, onEnded }
     };
     const setup = async () => {
       if (original) {
-        element.src = `/api/stream/${episode.id}`;
+        element.src = `/api/stream/${streamId}`;
         startPlayback();
         return;
       }
-      const response = await fetch(`/api/playback/${episode.id}`, { signal: controller.signal });
+      const response = await fetch(`/api/playback/${streamId}`, { signal: controller.signal });
       const data = (await response.json()) as { manifest: string; qualities: number[]; error?: string };
       if (!response.ok) throw new Error(data.error || 'The host could not prepare this stream.');
       if (!alive) return;
@@ -114,8 +115,8 @@ export function AdaptiveVideo({ episode, poster, progress, onProgress, onEnded }
           fragLoadPolicy: {
             default: {
               ...Hls.DefaultConfig.fragLoadPolicy.default,
-              maxTimeToFirstByteMs: episode.id.startsWith('t-') ? 120_000 : 30_000,
-              maxLoadTimeMs: episode.id.startsWith('t-') ? 150_000 : 60_000,
+              maxTimeToFirstByteMs: streamId.startsWith('t-') ? 120_000 : 30_000,
+              maxLoadTimeMs: streamId.startsWith('t-') ? 150_000 : 60_000,
             },
           },
         });
@@ -171,7 +172,7 @@ export function AdaptiveVideo({ episode, poster, progress, onProgress, onEnded }
       element.removeAttribute('src');
       element.load();
     };
-  }, [episode.id, original, retry]);
+  }, [streamId, original, retry]);
 
   const save = (element: HTMLVideoElement, completed = false) => {
     if (element.duration > 0 && Number.isFinite(element.duration))

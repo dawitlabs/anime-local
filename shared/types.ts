@@ -5,6 +5,7 @@ export interface Subtitle {
 }
 
 export interface Episode {
+  streamId?: string;
   id: string;
   title: string;
   filename: string;
@@ -16,7 +17,9 @@ export interface Episode {
 }
 
 export interface Title {
-  source?: 'torrent';
+  source?: 'torrent' | 'catalog';
+  episodeCount?: number;
+  rating?: string;
   id: string;
   name: string;
   kind: 'movie' | 'series';
@@ -27,6 +30,18 @@ export interface Title {
   backdrop?: string;
   addedAt: number;
   episodes: Episode[];
+}
+
+export interface CatalogPage {
+  titles: Title[];
+  nextPage: number | null;
+}
+export interface ResolvedEpisode {
+  streamId: string;
+  filename: string;
+  size: number;
+  format: string;
+  quality: string;
 }
 
 export interface Library {

@@ -6,6 +6,8 @@ Torrent connections originate from the host PC. Peers and trackers can see its n
 
 Sources accept magnet links and bounded torrent-file uploads. Arbitrary local paths, HTTP source URLs, magnet HTTP metadata references and web seeds are not accepted as video sources. File paths and source size are checked before cached pieces are read or written. The FFmpeg bridge is loopback-only with an unpredictable per-process path, and FFmpeg input protocols are restricted. These are application boundaries, not a sandbox for FFmpeg; keep Node, FFmpeg and dependencies current.
 
+Catalog search and episode discovery contact the configured third-party providers from the host PC. Artwork loads from HTTPS image hosts in catalog metadata. Source responses only supply validated v1 hashes, file indexes/names and bounded tracker lists; arbitrary provider video URLs are ignored. Provider requests have deadlines, response-size limits and bounded caches. Provider base URLs are host configuration, not viewer-controlled input. Browsing does not start torrent downloads; Play does. The site cannot promise that all catalog entries have available sources.
+
 # Dependency review: 2026-10-17
 
 `npm audit` reports four high-severity package entries along one dependency chain: `webtorrent` → `torrent-discovery` → `bittorrent-tracker` → `ip`. They refer to [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp), incorrect public-address classification by `ip.isPublic`.

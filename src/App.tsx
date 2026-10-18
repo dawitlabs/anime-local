@@ -23,15 +23,18 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import type { Library, Title } from '../shared/types';
+import type { CatalogPage, Library, Title } from '../shared/types';
 import { Landscape } from './components/Landscape';
 import { TitleCard, ContinueCard } from './components/TitleCard';
 import { LibraryGuide } from './components/LibraryGuide';
 import { TorrentManager } from './components/TorrentManager';
-import { sizeLabel, usePreferences } from './storage';
+import { usePreferences } from './storage';
 
 const Player = lazy(() => import('./components/Player').then((module) => ({ default: module.Player })));
-type View = 'all' | 'series' | 'movie' | 'saved';
+const CatalogWatch = lazy(() =>
+  import('./components/CatalogWatch').then((module) => ({ default: module.CatalogWatch })),
+);
+type View = 'all' | 'series' | 'movie' | 'saved' | 'local';
 const views: Array<{ id: View; label: string; icon: LucideIcon }> = [
   { id: 'all', label: 'Discover', icon: LayoutGrid },
   { id: 'series', label: 'Anime series', icon: Tv },
@@ -43,6 +46,11 @@ export function App() {
   const [library, setLibrary] = useState<Library | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [catalog, setCatalog] = useState<Title[]>([]);
+  const [catalogError, setCatalogError] = useState('');
+  const [page, setPage] = useState(0);
+  const [nextPage, setNextPage] = useState<number | null>(null);
+  const [catalogRefresh, setCatalogRefresh] = useState(0);
   const [scanning, setScanning] = useState(false);
   const [notice, setNotice] = useState('');
   const [guide, setGuide] = useState(false);
@@ -50,7 +58,7 @@ export function App() {
   const [view, setView] = useState<View>('all');
   const [query, setQuery] = useState('');
   const [genre, setGenre] = useState('All genres');
-  const [sort, setSort] = useState('recent');
+  const [sort, setSort] = useState('popular');
   const [selected, setSelected] = useState<{ title: Title; episode?: string } | null>(null);
   const preferences = usePreferences();
   const load = useCallback(async (scan = false) => {
@@ -73,7 +81,6 @@ export function App() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load your library.');
     } finally {
-      setLoading(false);
       setScanning(false);
     }
   }, []);
@@ -84,23 +91,86 @@ export function App() {
     }, 5000);
     return () => clearInterval(timer);
   }, [load]);
+  const browsing = view !== 'saved' && view !== 'local';
+  useEffect(() => {
+    setPage(0);
+    setCatalog([]);
+  }, [query, genre, sort]);
+  useEffect(() => {
+    if (!browsing) {
+      setLoading(false);
+      return;
+    }
+    const abort = new AbortController();
+    setLoading(true);
+    setCatalogError('');
+    const timer = setTimeout(
+      () => {
+        const params = new URLSearchParams({ q: query, page: String(page), genre, order: sort });
+        void fetch(`/api/catalog?${params}`, { signal: abort.signal })
+          .then(async (response) => {
+            const data = (await response.json()) as CatalogPage & { error?: string };
+            if (!response.ok) throw new Error(data.error || 'Could not load the anime catalog.');
+            if (!abort.signal.aborted) {
+              setCatalog((previous) =>
+                page
+                  ? [...new Map([...previous, ...data.titles].map((title) => [title.id, title])).values()]
+                  : data.titles,
+              );
+              setNextPage(data.nextPage);
+            }
+          })
+          .catch((cause: unknown) => {
+            if (!abort.signal.aborted)
+              setCatalogError(cause instanceof Error ? cause.message : 'Could not load the catalog.');
+          })
+          .finally(() => {
+            if (!abort.signal.aborted) setLoading(false);
+          });
+      },
+      query ? 350 : 0,
+    );
+    return () => {
+      clearTimeout(timer);
+      abort.abort();
+    };
+  }, [query, page, genre, sort, browsing, catalogRefresh]);
   useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(''), 5000);
     return () => clearTimeout(timer);
   }, [notice]);
-  const titles = library?.titles || [];
-  const featured = useMemo(() => [...titles].sort((a, b) => b.addedAt - a.addedAt)[0], [titles]);
-  const genres = [...new Set(titles.flatMap((title) => title.genres))].sort();
+  const titles = browsing
+    ? catalog
+    : view === 'saved'
+      ? [...Object.values(preferences.titles), ...(library?.titles || [])].filter((title) =>
+          preferences.saved.includes(title.id),
+        )
+      : library?.titles || [];
+  const featured = useMemo(() => catalog[0], [catalog]);
+  const genres = [
+    'Action',
+    'Adventure',
+    'Comedy',
+    'Drama',
+    'Fantasy',
+    'Romance',
+    'Sci-Fi',
+    'Slice of Life',
+    'Sports',
+    'Mystery',
+  ];
   const filtered = titles
     .filter(
       (title) =>
-        (view === 'all' || (view === 'saved' ? preferences.saved.includes(title.id) : title.kind === view)) &&
+        (view === 'all' ||
+          view === 'local' ||
+          (view === 'saved' ? preferences.saved.includes(title.id) : title.kind === view)) &&
         (genre === 'All genres' || title.genres.includes(genre)) &&
-        `${title.name} ${title.genres.join(' ')}`.toLowerCase().includes(query.toLowerCase()),
+        (browsing || `${title.name} ${title.genres.join(' ')}`.toLowerCase().includes(query.toLowerCase())),
     )
-    .sort((a, b) => (sort === 'name' ? a.name.localeCompare(b.name) : b.addedAt - a.addedAt));
-  const continuing = titles
+    .sort((a, b) => (sort === 'name' ? a.name.localeCompare(b.name) : 0));
+  const continuing = [...Object.values(preferences.titles), ...(library?.titles || [])]
     .flatMap((title) =>
       title.episodes.map((episode) => ({ title, episode, progress: preferences.progress[episode.id] })),
     )
@@ -108,10 +178,11 @@ export function App() {
     .sort((a, b) => b.progress.updatedAt - a.progress.updatedAt)
     .slice(0, 3);
   const play = (title: Title, episode?: string) => {
-    const latest = title.episodes
+    const latest = (preferences.titles[title.id] || title).episodes
       .filter((item) => preferences.progress[item.id] && !preferences.progress[item.id].completed)
       .sort((a, b) => preferences.progress[b.id].updatedAt - preferences.progress[a.id].updatedAt)[0];
     setSelected({ title, episode: episode || latest?.id });
+    if (!preferences.titles[title.id]) preferences.rememberTitle(title);
   };
   const navigate = (next: View) => {
     setView(next);
@@ -145,20 +216,22 @@ export function App() {
             >
               <Icon size={19} />
               <span>{label}</span>
-              {id === 'saved' &&
-                preferences.saved.filter((id) => titles.some((title) => title.id === id)).length > 0 && (
-                  <small>
-                    {preferences.saved.filter((id) => titles.some((title) => title.id === id)).length}
-                  </small>
-                )}
+              {id === 'saved' && preferences.saved.length > 0 && <small>{preferences.saved.length}</small>}
             </button>
           ))}
         </nav>
         <div className="sidebar-library">
           <span className="nav-label">YOUR SPACE</span>
+          <button
+            className={`nav-item ${view === 'local' ? 'selected' : ''}`}
+            onClick={() => navigate('local')}
+          >
+            <HardDrive size={19} />
+            <span>On this PC</span>
+          </button>
           <button className="nav-item" onClick={() => setTorrentManager(true)}>
             <Magnet size={19} />
-            <span>Torrent sources</span>
+            <span>Stream settings</span>
           </button>
           <button className="nav-item" onClick={() => setGuide(true)}>
             <FolderOpen size={19} />
@@ -172,12 +245,12 @@ export function App() {
             </span>
             <div>
               <strong>Home is the server.</strong>
-              <p>Your files. Your collection.</p>
+              <p>Pick a story. Press play.</p>
             </div>
             <span className="online-dot" />
           </div>
           <button className="help-link" onClick={() => setTorrentManager(true)}>
-            <CircleHelp size={16} /> Getting started <ChevronRight size={15} />
+            <CircleHelp size={16} /> Advanced sources <ChevronRight size={15} />
           </button>
           <div className="sidebar-footer">
             MADE FOR THE LOVE OF ANIME <span>夜</span>
@@ -187,8 +260,8 @@ export function App() {
       <div className="main-shell">
         <header className="topbar">
           <div className="breadcrumb">
-            Your library <ChevronRight size={14} />
-            <span>{views.find((item) => item.id === view)?.label}</span>
+            Anime <ChevronRight size={14} />
+            <span>{view === 'local' ? 'On this PC' : views.find((item) => item.id === view)?.label}</span>
           </div>
           <label className="search-box">
             <Search size={18} />
@@ -217,6 +290,14 @@ export function App() {
               <p>{error}</p>
               <button className="button secondary" onClick={() => void load()}>
                 Retry
+              </button>
+            </div>
+          )}
+          {catalogError && browsing && (
+            <div className="notice error" role="alert">
+              <p>{catalogError}</p>
+              <button className="button secondary" onClick={() => setCatalogRefresh((value) => value + 1)}>
+                Retry catalog
               </button>
             </div>
           )}
@@ -256,7 +337,7 @@ export function App() {
                 <div className="hero-content">
                   <span className="hero-kicker">
                     <span />
-                    {featured ? 'FROM YOUR COLLECTION' : 'YOUR WORLD. ON PLAY.'}
+                    {featured ? 'YOUR NEXT STORY' : 'YOUR WORLD. ON PLAY.'}
                   </span>
                   <h2>
                     {featured ? (
@@ -272,9 +353,7 @@ export function App() {
                   <div className="hero-meta">
                     {featured ? (
                       <>
-                        <span>
-                          {featured.kind === 'movie' ? 'Movie' : `${featured.episodes.length} episodes`}
-                        </span>
+                        <span>{featured.kind === 'movie' ? 'Movie' : 'Anime series'}</span>
                         {featured.year && (
                           <>
                             <i />
@@ -300,27 +379,27 @@ export function App() {
                   </div>
                   <p>
                     {featured?.description ||
-                      (featured
-                        ? 'Settle in and pick up a story from your own collection. Stream straight from your PC, at your pace.'
-                        : 'Add a torrent, choose an episode, and settle in. Your personal anime cinema streams right from your PC.')}
+                      'Browse anime, choose an episode, and settle in. Your PC finds a stream automatically.'}
                   </p>
                   <div className="hero-actions">
                     <button
                       className="button primary"
-                      onClick={() => (featured ? play(featured) : setTorrentManager(true))}
+                      disabled={!featured}
+                      onClick={() => featured && play(featured)}
                     >
                       {featured ? <Play size={18} fill="currentColor" /> : <Plus size={19} />}
-                      {featured ? 'Watch now' : 'Add your first torrent'}
+                      {featured ? 'Watch now' : 'Loading anime…'}
                     </button>
                     {featured ? (
-                      <button className="button glass" onClick={() => preferences.toggleSaved(featured.id)}>
+                      <button
+                        className="button glass"
+                        onClick={() => preferences.toggleSaved(featured.id, featured)}
+                      >
                         {preferences.saved.includes(featured.id) ? <Check size={18} /> : <Plus size={18} />}My
                         watchlist
                       </button>
                     ) : (
-                      <button className="hero-text-button" onClick={() => setTorrentManager(true)}>
-                        How it works <ArrowRight size={16} />
-                      </button>
+                      <span className="hero-text-button">No links to find. Just press play.</span>
                     )}
                   </div>
                 </div>
@@ -335,12 +414,11 @@ export function App() {
               <div className="library-stats">
                 <span>
                   <Clapperboard size={16} />
-                  <strong>{titles.length}</strong> titles in your collection
+                  <strong>{titles.length}</strong> anime to explore
                 </span>
                 <span>
                   <Tv size={16} />
-                  <strong>{titles.reduce((count, title) => count + title.episodes.length, 0)}</strong> videos
-                  ready to stream
+                  Movies &amp; full series
                 </span>
                 <span>
                   <Signal size={16} />
@@ -348,7 +426,7 @@ export function App() {
                 </span>
                 <span className="storage-stat">
                   <HardDrive size={15} />
-                  {sizeLabel(library?.totalBytes || 0)} on your PC
+                  Automatic source selection
                 </span>
               </div>
               {continuing.length > 0 && (
@@ -382,17 +460,19 @@ export function App() {
                         ? 'A movie kind of night'
                         : view === 'series'
                           ? 'One more episode'
-                          : 'Your collection'}
+                          : view === 'local'
+                            ? 'On this PC'
+                            : 'Find your next story'}
                 </h2>
                 <span className="count-badge">{filtered.length}</span>
               </div>
               <button
                 className="text-button refresh-button"
-                disabled={scanning}
-                onClick={() => void load(true)}
+                disabled={scanning || loading}
+                onClick={() => (browsing ? setCatalogRefresh((value) => value + 1) : void load(true))}
               >
                 <RefreshCw size={15} className={scanning ? 'spin' : ''} />
-                {scanning ? 'Scanning…' : 'Refresh library'}
+                {loading || scanning ? 'Refreshing…' : 'Refresh'}
               </button>
             </div>
             <div className="collection-toolbar">
@@ -428,16 +508,19 @@ export function App() {
                     value={sort}
                     onChange={(event) => setSort(event.target.value)}
                   >
-                    <option value="recent">Recently added</option>
+                    <option value="popular">Most popular</option>
+                    <option value="trending">Trending</option>
+                    <option value="rating">Top rated</option>
+                    <option value="airing">Currently airing</option>
                     <option value="name">Title A–Z</option>
                   </select>
                 </label>
               </div>
             </div>
-            {loading ? (
+            {loading && !titles.length ? (
               <div className="empty-state" role="status">
                 <RefreshCw className="spin" />
-                <h3>Opening your library…</h3>
+                <h3>Opening the anime catalog…</h3>
               </div>
             ) : filtered.length ? (
               <div className="title-grid">
@@ -446,7 +529,7 @@ export function App() {
                     key={title.id}
                     title={title}
                     saved={preferences.saved.includes(title.id)}
-                    onSave={() => preferences.toggleSaved(title.id)}
+                    onSave={() => preferences.toggleSaved(title.id, title)}
                     onPlay={() => play(title)}
                   />
                 ))}
@@ -472,7 +555,9 @@ export function App() {
                       ? 'Save a little something for later.'
                       : titles.length
                         ? 'Nothing here just yet.'
-                        : 'Every collection starts with one story.'}
+                        : browsing
+                          ? 'No anime found here yet.'
+                          : 'Every collection starts with one story.'}
                 </h3>
                 <p>
                   {query
@@ -480,13 +565,14 @@ export function App() {
                     : view === 'saved'
                       ? 'Tap the bookmark on any title to add it to your watchlist.'
                       : titles.length
-                        ? 'Add more videos or try a different filter.'
-                        : 'Add a magnet link or a .torrent file. Your movies and episodes appear here once peers share the file list.'}
+                        ? 'Load more anime or try a different filter.'
+                        : browsing
+                          ? 'Try searching for an anime title or changing the filters.'
+                          : 'Start watching from Discover. Sources are added to this PC automatically.'}
                 </p>
-                {!titles.length ? (
-                  <button className="button secondary" onClick={() => setTorrentManager(true)}>
-                    <Magnet size={16} />
-                    Add torrent source <ArrowRight size={15} />
+                {!titles.length && !browsing ? (
+                  <button className="button secondary" onClick={() => navigate('all')}>
+                    <Play size={16} /> Browse anime <ArrowRight size={15} />
                   </button>
                 ) : query ? (
                   <button
@@ -503,6 +589,13 @@ export function App() {
                   <span className="online-dot" />
                   Your collection stays on your PC
                 </div>
+              </div>
+            )}
+            {browsing && nextPage !== null && !catalogError && (
+              <div className="catalog-more">
+                <button className="button secondary" disabled={loading} onClick={() => setPage(nextPage)}>
+                  {loading ? 'Loading more anime…' : 'Load more anime'} <ArrowRight size={16} />
+                </button>
               </div>
             )}
           </section>
@@ -531,13 +624,24 @@ export function App() {
             </div>
           }
         >
-          <Player
-            title={selected.title}
-            initialEpisode={selected.episode}
-            progress={preferences.progress}
-            onProgress={preferences.saveProgress}
-            onClose={() => setSelected(null)}
-          />
+          {selected.title.source === 'catalog' ? (
+            <CatalogWatch
+              title={selected.title}
+              initialEpisode={selected.episode}
+              progress={preferences.progress}
+              onProgress={preferences.saveProgress}
+              onRemember={preferences.rememberTitle}
+              onClose={() => setSelected(null)}
+            />
+          ) : (
+            <Player
+              title={selected.title}
+              initialEpisode={selected.episode}
+              progress={preferences.progress}
+              onProgress={preferences.saveProgress}
+              onClose={() => setSelected(null)}
+            />
+          )}
         </Suspense>
       )}
       {notice && (

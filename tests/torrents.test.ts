@@ -11,6 +11,8 @@ import { TorrentService } from '../server/torrents.ts';
 import { LibraryStore } from '../server/library.ts';
 import { StreamingService } from '../server/streaming.ts';
 import { createApp } from '../server/app.ts';
+import { CatalogService } from '../server/catalog.ts';
+import type { Title } from '../shared/types.ts';
 
 const isolated = {
   dht: false,
@@ -73,10 +75,35 @@ test(
     await service.start();
     store.external = service;
     const streaming = new StreamingService(store, path.join(root, '.cache', 'streams'), 32 * 1024 ** 2, 1);
-    const app = createApp(store, false, streaming, service);
+    let seed: Torrent;
+    const anime = {
+      id: 'kitsu:1',
+      name: 'Synthetic series',
+      type: 'series',
+      videos: [{ id: 'kitsu:1:1', title: 'Test episode', episode: 1 }],
+    };
+    const catalog = new CatalogService(service, {
+      fetcher: async (url) => {
+        if (String(url).includes('/catalog/')) return Response.json({ metas: [anime] });
+        if (String(url).includes('/meta/')) return Response.json({ meta: anime });
+        return Response.json({
+          streams: [
+            {
+              infoHash: seed.infoHash,
+              fileIdx: 0,
+              name: '720p',
+              title: '👤 1 💾 35 MB',
+              behaviorHints: { filename: 'S01E01 - Test.mp4' },
+            },
+          ],
+        });
+      },
+    });
+    const app = createApp(store, false, streaming, service, [], catalog);
     const server = app.listen(0, '127.0.0.1');
     await new Promise<void>((resolve) => server.once('listening', resolve));
     context.after(async () => {
+      catalog.close();
       streaming.close();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -94,11 +121,38 @@ test(
       }).on('error', reject);
     });
     assert.equal(reboundStatus, 403);
-    const seed = await new Promise<Torrent>((resolve, reject) => {
+    seed = await new Promise<Torrent>((resolve, reject) => {
       seeder.once('error', reject);
       const options = { announce: [] as string[], pieceLength: 64 * 1024 };
       seeder.seed(seedDir, options, resolve);
     });
+    const connectSeed = (torrent: Torrent) => {
+      const connect = () => torrent.addPeer(`127.0.0.1:${seeder.torrentPort}`);
+      if (torrent.infoHash) connect();
+      else torrent.once('infoHash', connect);
+    };
+    engine.on('add', connectSeed);
+    assert.equal(store.library.titles.length, 0);
+    const browse = (await (await fetch(`${base}/api/catalog`)).json()) as { titles: Title[] };
+    assert.equal(browse.titles[0].id, 'kitsu:1', 'An empty PC still has a browsable catalog');
+    const automatic = await fetch(`${base}/api/catalog/kitsu:1/play`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episode: 'kitsu:1:1' }),
+    });
+    assert.equal(automatic.status, 200);
+    const resolved = (await automatic.json()) as { streamId: string };
+    assert.equal(resolved.streamId, `t-${seed.infoHash}-0`);
+    const autoSegment = await fetch(`${base}/api/hls/${resolved.streamId}/240/0.ts`);
+    assert.equal(
+      autoSegment.status,
+      200,
+      'Catalog Play reaches real torrent-backed FFmpeg HLS without a manual source',
+    );
+    assert.ok((await autoSegment.arrayBuffer()).byteLength > 1000);
+    assert.ok(service.list()[0].downloaded < service.list()[0].total / 2);
+    await service.remove(seed.infoHash);
+    engine.off('add', connectSeed);
     const invalid = await fetch(`${base}/api/torrents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

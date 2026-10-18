@@ -2,7 +2,7 @@ import { Bookmark, Check, Play } from 'lucide-react';
 import type { Episode, Title, WatchProgress } from '../../shared/types';
 
 export function Poster({ title, className = '' }: { title: Title; className?: string }) {
-  const variant = parseInt(title.id.slice(0, 2), 16) % 5;
+  const variant = [...title.id].reduce((sum, letter) => sum + letter.charCodeAt(0), 0) % 5;
   return (
     <div className={`poster-art palette-${variant} ${className}`}>
       <div className="poster-moon" />
@@ -12,7 +12,7 @@ export function Poster({ title, className = '' }: { title: Title; className?: st
         夜
       </span>
       <div className="poster-words">
-        <small>YOUR LOCAL COLLECTION</small>
+        <small>{title.source === 'catalog' ? 'YOUR NEXT STORY' : 'YOUR LOCAL COLLECTION'}</small>
         <strong>{title.name}</strong>
       </div>
       {title.poster && (
@@ -69,7 +69,11 @@ export function TitleCard({
             <span>·</span>
           </>
         )}
-        {title.kind === 'series' ? `${title.episodes.length} episodes` : title.episodes[0]?.format}
+        {title.kind === 'series'
+          ? title.episodeCount || title.episodes.length
+            ? `${title.episodeCount || title.episodes.length} episodes`
+            : 'Anime series'
+          : 'Movie'}
         {title.genres[0] && (
           <>
             <span>·</span>

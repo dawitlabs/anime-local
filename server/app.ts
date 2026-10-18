@@ -6,6 +6,7 @@ import { isIP } from 'node:net';
 import { LibraryStore } from './library.ts';
 import { StreamError, type StreamingService } from './streaming.ts';
 import type { TorrentService } from './torrents.ts';
+import type { CatalogService } from './catalog.ts';
 
 export function createApp(
   store: LibraryStore,
@@ -13,6 +14,7 @@ export function createApp(
   streaming?: StreamingService,
   torrents?: TorrentService,
   allowedHosts: string[] = [],
+  catalog?: CatalogService,
 ) {
   const app = express();
   const hosts = new Set(['localhost', ...allowedHosts.map((host) => host.toLowerCase())]);
@@ -37,7 +39,7 @@ export function createApp(
     if (!development)
       res.setHeader(
         'Content-Security-Policy',
-        "default-src 'self'; img-src 'self' data:; font-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'",
+        "default-src 'self'; img-src 'self' data: https:; font-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'",
       );
     // The API is private to this origin, including when enabled on a trusted LAN.
     const origin = req.get('origin');
@@ -48,6 +50,34 @@ export function createApp(
     next();
   });
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+  if (catalog) {
+    app.get('/api/catalog', async (req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(
+        await catalog.browse(
+          typeof req.query.q === 'string' ? req.query.q : '',
+          Number(req.query.page || 0),
+          typeof req.query.genre === 'string' ? req.query.genre : '',
+          typeof req.query.order === 'string' ? req.query.order : 'popular',
+        ),
+      );
+    });
+    app.get('/api/catalog/:id', async (req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await catalog.title(req.params.id));
+    });
+    app.get('/api/catalog/:id/status/:episode', (req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ message: catalog.phase(req.params.episode) });
+    });
+    app.post('/api/catalog/:id/play', express.json({ limit: '1kb' }), async (req, res) => {
+      const body: unknown = req.body;
+      if (!body || typeof body !== 'object' || !('episode' in body) || typeof body.episode !== 'string')
+        throw new StreamError('Choose an episode.', 400);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await catalog.resolve(req.params.id, body.episode, 'retry' in body && body.retry === true));
+    });
+  }
   if (torrents) {
     app.get('/api/torrents', (_req, res) => {
       res.setHeader('Cache-Control', 'no-store');

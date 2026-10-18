@@ -113,6 +113,18 @@ export class TorrentService implements ExternalLibrary {
   get count() {
     return this.entries.size;
   }
+
+  async waitForTitle(id: string, timeout: number, signal: AbortSignal): Promise<Title> {
+    const deadline = Date.now() + timeout;
+    while (!signal.aborted && Date.now() < deadline) {
+      const entry = this.entries.get(id);
+      if (!entry) throw new StreamError('Source was removed.');
+      if (entry.error) throw new StreamError(entry.error);
+      if (entry.torrent?.ready && entry.saved.title) return entry.saved.title;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new StreamError('Torrent peers did not supply metadata in time.');
+  }
   get cachedBytes() {
     return [...this.entries.values()].reduce(
       (sum, entry) => sum + (entry.torrent?.downloaded || entry.saved.cachedBytes || 0),

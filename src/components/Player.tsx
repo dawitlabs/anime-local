@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, Check, Play } from 'lucide-react';
 import type { Title, WatchProgress } from '../../shared/types';
 import { sizeLabel } from '../storage';
 import { Dialog } from './Dialog';
-import { AdaptiveVideo } from './AdaptiveVideo';
+import { EpisodeStream } from './EpisodeStream';
 
 interface Props {
   title: Title;
@@ -29,9 +29,10 @@ export function Player({ title, initialEpisode, progress, onProgress, onClose }:
   };
   return (
     <Dialog title="Now playing · local stream" wide onClose={onClose}>
-      <AdaptiveVideo
+      <EpisodeStream
         key={episode.id}
         episode={episode}
+        catalogId={title.source === 'catalog' ? title.id : undefined}
         poster={title.backdrop || title.poster}
         progress={progress[episode.id]}
         onProgress={(value) => onProgress(episode.id, value)}
@@ -46,7 +47,13 @@ export function Player({ title, initialEpisode, progress, onProgress, onClose }:
           </span>
           <h2>{title.name}</h2>
           <p className="muted">
-            {episode.title} <span>·</span> {episode.format} <span>·</span> {sizeLabel(episode.size)}
+            {episode.title}
+            {episode.size > 0 && (
+              <>
+                {' '}
+                <span>·</span> {episode.format} <span>·</span> {sizeLabel(episode.size)}
+              </>
+            )}
           </p>
         </div>
         <span className="local-pill">
@@ -112,7 +119,9 @@ export function Player({ title, initialEpisode, progress, onProgress, onClose }:
                   <span className="episode-name">
                     {item.title}
                     <small>
-                      {item.format} · {sizeLabel(item.size)}
+                      {item.size > 0
+                        ? `${item.format} · ${sizeLabel(item.size)}`
+                        : 'Stream selected automatically'}
                     </small>
                   </span>
                   {progress[item.id]?.completed ? <Check size={18} /> : <Play size={16} />}

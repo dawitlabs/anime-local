@@ -13,6 +13,8 @@ services:
       TRANSCODE_WORKERS: ${TRANSCODE_WORKERS:-2}
       TORRENT_DIR: /app/data/torrents
       TORRENT_MAX_GB: ${TORRENT_MAX_GB:-20}
+      CATALOG_URL: ${CATALOG_URL:-https://anime-kitsu.strem.fun}
+      SOURCES_URL: ${SOURCES_URL:-https://torrentio.strem.fun}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
     volumes:
       - ${MEDIA_DIR:-./media}:/app/media:ro

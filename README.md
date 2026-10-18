@@ -1,8 +1,10 @@
 # Yoru — your own little anime cinema
 
-A self-hosted anime streaming site with **torrent streaming on your PC**. Fork it, run it locally, add a magnet link or `.torrent` file, and watch movies or episodes in a browser **before the full video has downloaded**. Each person runs an independent host. The browser is just the player; the PC connects to torrent peers.
+A self-hosted anime streaming site with **automatic discovery and torrent streaming on your PC**. Fork it, run it, browse or search for an anime, and press **Watch**. Yoru loads the episode list, finds a source, and begins streaming before the complete video has arrived. **No magnet link, torrent file, or API key is required for the normal workflow.**
 
-Yoru includes a responsive library, search, movie/series filters, watchlist, resume playback, seasons, next episode, torrent status, pause/resume, and **adaptive HLS streaming for slower connections**. Existing local videos also work. The interface, fonts, and artwork are served locally. No anime files or torrent search/indexing service is bundled; bring your own sources.
+Each person runs an independent host. The browser is the player; the PC discovers torrent peers and serves adaptive video. Yoru includes movies, series, popular/trending/top-rated catalogs, genre filters, a watchlist, resume playback, seasons, next episode, and **240p/360p/720p adaptive HLS for slower viewer connections**. Local videos and manual torrent sources remain optional advanced features.
+
+The catalog is live metadata, not a bundled collection of anime files. Availability depends on the discovery providers and reachable peers. Some titles or episodes have no usable source; Yoru reports that and offers a retry. It cannot guarantee every anime or instant startup.
 
 ## Run it
 
@@ -17,7 +19,9 @@ npm run build
 npm start
 ```
 
-Open **http://localhost:4173**. Click **Add your first torrent**, paste a magnet link or open a `.torrent` file. Once peers supply metadata, its videos appear in your collection. Choose an episode and press **Watch now**. **Torrent sources** shows peers, speed, cache size, and pause/remove controls. Sources survive restarts.
+Open **http://localhost:4173**. Anime appears automatically, including on a fresh installation with an empty media folder. Search for a title, open its card, and choose an episode. Yoru selects the source on the host PC; the player shows connection and buffering progress. **Try another stream** switches to another candidate while retaining watch progress.
+
+**Stream settings** contains optional manual source input, peer/speed information, and pause/remove controls. You do not need to enter anything there to use Discover. Sources and cached pieces survive restarts.
 
 On Windows, copy `.env.example` to `.env` in Explorer or use `Copy-Item .env.example .env` in PowerShell. The Node server and FFmpeg calls do not require Bash.
 
@@ -39,6 +43,14 @@ For Node, set `HOST=0.0.0.0` in `.env` and restart. For Docker, set `BIND_ADDRES
 
 Anyone can fork this MIT-licensed repository and run an independent library. Forking shares the source code, not anyone’s media or watch history.
 
+## Automatic catalog and source discovery
+
+The defaults use the [Kitsu anime add-on](https://github.com/TheBeastLT/stremio-kitsu-anime) for titles, search, artwork and episode metadata, and [Torrentio](https://github.com/TheBeastLT/torrentio-scraper) for torrent candidates. No account or API key is needed with these public defaults. You can set `CATALOG_URL` and `SOURCES_URL` to compatible add-on base URLs on your own host. The providers must support `anime` resources and Kitsu IDs; a manifest URL is accepted too. A general movie-only provider is not a drop-in replacement.
+
+Catalog and source responses are bounded, cached for five minutes, and shared between simultaneous requests. Provider failures remain visible and retryable. Only selecting Play contacts torrent peers; browsing does not download episodes. Sources with reported peers, lower resolution, and smaller per-video size are preferred. Automatic discovery considers videos up to 3 GiB and tries up to four candidates, checking the selected filename/index against actual torrent metadata. It does not blindly play the first file in a season pack. A failed newly added candidate is removed; an already available source is preserved.
+
+Catalog/search and episode requests go from your PC to the configured providers. Artwork loads from their HTTPS image hosts. Fonts, scripts, the player, and video are served by your PC. Providers are independent services and can change, rate-limit, or become unavailable. A slow or cold swarm can take a minute or more to start. Use **On this PC** for existing local sources when catalog services are unavailable.
+
 ## Torrent behavior and bandwidth
 
 - Adding a source retrieves its metadata but does **not** select the whole torrent for download. Reads select pieces in 512 KiB windows, with backpressure and cancellation when the viewer seeks or closes a stream. Torrent piece boundaries and socket buffering mean some neighboring bytes can also be fetched.
@@ -46,7 +58,7 @@ Anyone can fork this MIT-licensed repository and run an independent library. For
 - Up to 32 sources can be added. Their **combined declared full size** must fit `TORRENT_MAX_GB` (20 GiB by default), even if only a few pieces are present. This is an admission budget, not an LRU piece cache; remove old sources to free capacity. Allow extra space for HLS chunks, metadata and filesystem overhead.
 - Movies and multi-episode torrents work. Files are ordered naturally; `S01E01` names give reliable season/episode ordering. A multi-video torrent is shown as one series. BitTorrent v1 hashes are supported; v2-only torrents and archived videos inside RAR/ZIP are not.
 - A source must have reachable peers with the required pieces. Zero-seed torrents can stall. Torrent source quality matters: picking a 480p release generally needs less incoming bandwidth than a 1080p release of the same show.
-- **Data saver reduces PC → browser traffic. It cannot reduce the original bytes the PC needs from torrent peers.** Watching on the same PC primarily saves player bandwidth/decoding, not your internet quota; choose a smaller torrent source to reduce internet use.
+- **Data saver reduces PC → browser traffic. It cannot reduce the original bytes the PC needs from torrent peers.** Watching on the same PC primarily saves player bandwidth/decoding, not your internet quota; automatic discovery prefers smaller sources to help reduce incoming internet use, but cannot promise a particular torrent bitrate.
 - Streaming still transfers and caches bytes. There is no separate full-file download step or offline-download button. Nothing can guarantee instant playback or a universal anime catalog.
 
 ## Optional local video library
@@ -81,7 +93,7 @@ media/
 - Optional artwork: `poster.jpg` / `backdrop.jpg` (also PNG, JPEG, WebP). Without artwork, Yoru creates a local illustrated cover.
 - Optional UTF-8 `.srt` / `.vtt` subtitles: match the video basename, optionally followed by a language code. For example, `S01E01.en.srt`. Select captions using the browser player. Embedded MKV subtitles and alternate audio selection are not extracted; adaptive playback uses the first video/audio tracks. Extract a subtitle with FFmpeg if needed.
 - Hidden files and symbolic links are skipped. Use real folders, or configure `MEDIA_DIR` as the root of the collection.
-- An empty installation honestly shows an empty library. No fake playable titles are seeded.
+- An empty local media folder is fine: Discover uses the online anime catalog. On this PC lists only actual files and sources on this host.
 
 Example `title.json` inside a title’s folder:
 
@@ -100,7 +112,10 @@ Watchlist and playback progress are saved per browser in local storage. They are
 
 ```mermaid
 flowchart LR
-  Peers[Torrent peers] --> Engine[Host PC: WebTorrent]
+  Catalog[Kitsu anime catalog] --> Browse[Browse and choose an episode]
+  Browse --> Sources[Automatic source discovery]
+  Sources --> Engine[Host PC: WebTorrent]
+  Peers[Torrent peers] --> Engine
   Engine --> Pieces[Verified pieces on local disk]
   Pieces --> Bridge[Private loopback byte-range reader]
   Bridge --> Probe[FFprobe metadata]
@@ -118,7 +133,7 @@ flowchart LR
 
 This uses the same core adaptive-bitrate idea as large video sites, scaled to a personal PC:
 
-1. WebTorrent obtains metadata and discovers peers on the host PC. A secret loopback-only HTTP reader makes selected torrent bytes available to FFmpeg without waiting for a complete file. HTTP metadata URLs and web seeds from magnets are disabled.
+1. The server looks up the chosen episode and selects a matching torrent candidate. WebTorrent obtains metadata and discovers peers on the host PC. A secret loopback-only HTTP reader makes selected torrent bytes available to FFmpeg without waiting for a complete file. HTTP metadata URLs and web seeds from magnets are disabled.
 2. FFprobe reads duration and dimensions; the server builds complete VOD playlists. Seeking selects pieces near the requested position; it may wait for peers and container indexes.
 3. The player starts at the smallest quality, estimates throughput, and changes quality as the connection allows. Choose **240p · Data saver** to keep it low.
 4. The server seeks into the source and encodes **only the requested six-second segment and quality**. It does not convert an entire movie before playing or produce every quality in advance.
@@ -142,18 +157,20 @@ Implementation references: [WebTorrent API](https://webtorrent.io/docs), [FFmpeg
 
 Copy `.env.example` to `.env`; restart after changes.
 
-| Variable            | Default            | Purpose                                                                     |
-| ------------------- | ------------------ | --------------------------------------------------------------------------- |
-| `MEDIA_DIR`         | `./media`          | Your local media root; relative to the repository or absolute               |
-| `HOST`              | `127.0.0.1`        | Node listen address; `0.0.0.0` enables trusted LAN access                   |
-| `PORT`              | `4173`             | HTTP port                                                                   |
-| `CACHE_DIR`         | `./.cache/streams` | Dedicated generated-chunk directory                                         |
-| `CACHE_MAX_MB`      | `512`              | Completed segment cache budget in MiB, minimum 32                           |
-| `TRANSCODE_WORKERS` | `2`                | Parallel segment encoders, from 1 to 4                                      |
-| `TORRENT_DIR`       | `./data/torrents`  | Private metadata and torrent piece storage                                  |
-| `TORRENT_MAX_GB`    | `20`               | Combined declared source-size budget in GiB                                 |
-| `ALLOWED_HOSTS`     | empty              | Extra hostnames, comma-separated; localhost and numeric IPs work by default |
-| `BIND_ADDRESS`      | `127.0.0.1`        | Docker host binding only                                                    |
+| Variable            | Default                         | Purpose                                                                     |
+| ------------------- | ------------------------------- | --------------------------------------------------------------------------- |
+| `CATALOG_URL`       | `https://anime-kitsu.strem.fun` | Compatible Kitsu anime metadata/catalog add-on                              |
+| `SOURCES_URL`       | `https://torrentio.strem.fun`   | Compatible Kitsu anime torrent discovery add-on                             |
+| `MEDIA_DIR`         | `./media`                       | Your local media root; relative to the repository or absolute               |
+| `HOST`              | `127.0.0.1`                     | Node listen address; `0.0.0.0` enables trusted LAN access                   |
+| `PORT`              | `4173`                          | HTTP port                                                                   |
+| `CACHE_DIR`         | `./.cache/streams`              | Dedicated generated-chunk directory                                         |
+| `CACHE_MAX_MB`      | `512`                           | Completed segment cache budget in MiB, minimum 32                           |
+| `TRANSCODE_WORKERS` | `2`                             | Parallel segment encoders, from 1 to 4                                      |
+| `TORRENT_DIR`       | `./data/torrents`               | Private metadata and torrent piece storage                                  |
+| `TORRENT_MAX_GB`    | `20`                            | Combined declared source-size budget in GiB                                 |
+| `ALLOWED_HOSTS`     | empty                           | Extra hostnames, comma-separated; localhost and numeric IPs work by default |
+| `BIND_ADDRESS`      | `127.0.0.1`                     | Docker host binding only                                                    |
 
 Keep `CACHE_DIR`, `TORRENT_DIR`, and `MEDIA_DIR` separate. Use dedicated storage directories per running instance. Stop the app before manually clearing its cache. Media, torrent metadata (which may contain private tracker URLs), secrets, cache, and build artifacts are excluded from Git. Local library files are read-only; **Remove source and cache** only deletes the app's torrent pieces for that source.
 
@@ -174,9 +191,9 @@ npm test
 npm run build
 ```
 
-Tests include real FFmpeg encoding and a **private, loopback-only two-client torrent swarm** using generated video. They verify magnet metadata, torrent-file import, playback before the full video arrives, unselected files staying unselected, byte ranges, transcoding from torrent pieces, persistence, pause/resume, removal, and the existing local-media paths. Tests do not contact public trackers or download anime. CI runs formatting, tests, and the production build.
+Tests include real FFmpeg encoding and a **private, loopback-only two-client torrent swarm** using generated video. They verify empty-host catalog browsing, automatic discovery through real torrent-backed HLS without manual input, candidate fallback, file identity, shared requests, retriable provider failures, magnet metadata, torrent-file import, playback before the full video arrives, unselected files staying unselected, byte ranges, transcoding from torrent pieces, persistence, pause/resume, removal, and the existing local-media paths. Tests do not contact public trackers or download anime. CI runs formatting, tests, and the production build.
 
-Linux/Chrome is exercised locally. Windows/macOS, mobile Safari, public swarms, and large multi-user loads need separate validation. Embedded subtitle tracks and alternate audio selection remain unsupported; local sidecar SRT/VTT captions are supported. See [SECURITY.md](SECURITY.md) for deployment boundaries and the current dependency advisory assessment.
+Linux/Chrome is exercised locally. Live public catalog/search, automatic torrent playback, seeking, resume, and next-episode playback have also been checked in Chrome; a 390px mobile viewport was checked for layout overflow. Cold peer discovery/probing can exceed a minute. Windows/macOS, mobile Safari, and large multi-user loads need separate validation. Public swarm availability varies over time. Embedded subtitle tracks and alternate audio selection remain unsupported; local sidecar SRT/VTT captions are supported. See [SECURITY.md](SECURITY.md) for deployment boundaries and the current dependency advisory assessment.
 
 The frontend is React + TypeScript + Vite. The Node/Express server owns WebTorrent, library discovery, file streaming, subtitles, and FFmpeg scheduling. There is no database or cloud service to provision. Only stream media you have permission to use.
 

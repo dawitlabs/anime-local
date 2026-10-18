@@ -7,6 +7,7 @@ import { createApp } from './app.ts';
 import { LibraryStore } from './library.ts';
 import { StreamingService } from './streaming.ts';
 import { TorrentService } from './torrents.ts';
+import { CatalogService } from './catalog.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mediaDirectory = path.resolve(root, process.env.MEDIA_DIR || 'media');
@@ -27,6 +28,10 @@ const torrents = new TorrentService(
 );
 await torrents.start();
 store.external = torrents;
+const catalog = new CatalogService(torrents, {
+  catalogURL: process.env.CATALOG_URL,
+  sourcesURL: process.env.SOURCES_URL,
+});
 const streaming = new StreamingService(
   store,
   path.resolve(root, process.env.CACHE_DIR || '.cache/streams'),
@@ -42,6 +47,7 @@ const app = createApp(
     .split(',')
     .map((host) => host.trim())
     .filter(Boolean),
+  catalog,
 );
 const server = createServer(app);
 let closeVite: (() => Promise<void>) | undefined;
@@ -72,12 +78,13 @@ server.on('error', (error) => {
 });
 server.listen(port, host, () => {
   console.log(
-    `\n  YORU · Your own little cinema\n  http://${host === '0.0.0.0' ? 'localhost' : host}:${port}\n  Media: ${mediaDirectory}\n  ${store.library.titles.length} titles ready to watch\n`,
+    `\n  YORU · Your own little cinema\n  http://${host === '0.0.0.0' ? 'localhost' : host}:${port}\n  Media: ${mediaDirectory}\n  ${store.library.titles.length} local titles · anime catalog available online\n`,
   );
 });
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.once(signal, () => {
     streaming.close();
+    catalog.close();
     server.close(() => {
       void Promise.all([torrents.close(), closeVite?.()]).finally(() => process.exit(0));
     });
